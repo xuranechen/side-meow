@@ -1,6 +1,7 @@
 ﻿<script>
   import { onMount } from "svelte";
   import { providers, addProvider, updateProvider } from "../stores/providers.js";
+  import { settings } from "../stores/settings.js";
   import { pageParams, navigateTo, goBack, showToast } from "../stores/ui.js";
   import { API_TYPES, DEFAULT_MODELS } from "../../lib/constants.js";
   import { generateId } from "../../lib/uuid.js";
@@ -84,7 +85,7 @@
       }
 
       const result = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("请求超时")), 15000);
+        const timeout = setTimeout(() => reject(new Error("请求超时")), ($settings.requestTimeout || 15) * 1000);
 
         chrome.runtime.sendMessage({
           type: "FETCH_MODELS",
@@ -157,13 +158,13 @@
 
   function tryDecodeBase64(str) {
     if (!str || str.length < 8) return null;
-    if (/^(sk-|gsk-|xai-|AIza|sess-)/.test(str)) return null;
+    if (/^(sk-|gsk-|xai-|AIza|sess-|ark-|tp-)/.test(str)) return null;
     if (!/^[A-Za-z0-9+/=_\-]+$/.test(str)) return null;
     try {
       const padded = str.replace(/-/g, "+").replace(/_/g, "/");
       const decoded = atob(padded);
       if (decoded.length < 4 || decoded.length > 4096) return null;
-      if (!/^[\x20-\x7E]+$/.test(decoded)) return null;
+      if (!/^[\x20-\x7E\n\r\t]+$/.test(decoded)) return null;
       return decoded;
     } catch {
       return null;
@@ -188,7 +189,9 @@
       /\b(sk-[A-Za-z0-9_\-]{8,})\b/,
       /\b(gsk-[A-Za-z0-9_\-]{8,})\b/,
       /\b(xai-[A-Za-z0-9_\-]{8,})\b/,
+      /\b(ark-[A-Za-z0-9_\-]{8,})\b/,
       /\b(AIzaSy[A-Za-z0-9_\-]{30,})\b/,
+      /\b(tp-[A-Za-z0-9_\-]{8,})\b/,
     ],
     baseUrl: [
       /(?:ANTHROPIC_BASE_URL|OPENAI_BASE_URL|GEMINI_BASE_URL|BASE_URL|API_BASE|ENDPOINT|base_url|baseUrl|endpoint)\s*[=:]\s*["']?(https?:\/\/[^\s"',;\]]+)["']?/i,
@@ -204,8 +207,15 @@
 
   function parseConfigString(input) {
     if (!input || !input.trim()) return null;
-    const str = input.trim();
+    let str = input.trim();
     const result = {};
+
+    const wholeDecoded = tryDecodeBase64(str);
+    if (wholeDecoded && (wholeDecoded.includes("http") || wholeDecoded.includes("="))) {
+      str = wholeDecoded;
+    }
+
+    const lines = str.split(/[\n\r]+/).map((l) => l.trim()).filter(Boolean);
 
     for (const pattern of PARSE_PATTERNS.apiKey) {
       const m = str.match(pattern);
@@ -218,11 +228,36 @@
       }
     }
 
+    if (!result.apiKey) {
+      for (const line of lines) {
+        if (line.startsWith("http")) continue;
+        const decoded = tryDecodeBase64(line);
+        if (decoded && decoded.length >= 8 && !decoded.includes(" ")) {
+          result.apiKey = decoded;
+          break;
+        }
+      }
+    }
+
     for (const pattern of PARSE_PATTERNS.baseUrl) {
       const m = str.match(pattern);
       if (m) {
         result.baseUrl = m[1].replace(/[\/\s]+$/, "");
         break;
+      }
+    }
+
+    if (!result.baseUrl) {
+      for (const line of lines) {
+        if (line.startsWith("http")) {
+          result.baseUrl = line.replace(/[\/\s]+$/, "");
+          break;
+        }
+        const decoded = tryDecodeBase64(line);
+        if (decoded && decoded.startsWith("http")) {
+          result.baseUrl = decoded.replace(/[\/\s]+$/, "");
+          break;
+        }
       }
     }
 
@@ -243,6 +278,7 @@
     } else if (result.apiKey) {
       if (result.apiKey.startsWith("sk-ant-")) result.type = "anthropic";
       else if (result.apiKey.startsWith("AIza")) result.type = "gemini";
+      else result.type = "openai";
     }
 
     return Object.keys(result).length > 0 ? result : null;
@@ -276,6 +312,10 @@
       showToast("未识别到有效配置", "warning");
       return;
     }
+    if (parsed.type && parsed.type !== type) {
+      type = parsed.type;
+      loadDefaultModels();
+    }
     if (parsed.apiKey) apiKey = parsed.apiKey;
     if (parsed.baseUrl) baseUrl = parsed.baseUrl;
     if (parsed.name) {
@@ -290,9 +330,6 @@
       }
       defaultModel = parsed.model;
     }
-    if (parsed.type && parsed.type !== type) {
-      handleTypeChange(parsed.type);
-    }
     showPasteDialog = false;
     showToast("已解析并填入配置");
 
@@ -304,6 +341,12 @@
   async function handleSubmit() {
     if (!name.trim() || !baseUrl.trim() || !apiKey.trim()) {
       showToast("请填写必填字段", "error");
+      return;
+    }
+
+    const duplicate = $providers.find((p) => p.name === name.trim() && p.id !== providerId);
+    if (duplicate) {
+      showToast("已存在同名配置「" + name.trim() + "」，请修改名称", "warning");
       return;
     }
 
@@ -353,7 +396,7 @@
 
     testing = true;
     try {
-      const testMessage = [{ role: "user", content: "请计算 2 + 3，只回答结果。" }];
+      const testMessage = [{ role: "user", content: "一根0.1mm绳子对折42次后有多长？只回答结果。" }];
       const provider = {
         type,
         baseUrl: baseUrl.trim(),
@@ -379,7 +422,7 @@
       });
 
       const result = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("请求超时")), 15000);
+        const timeout = setTimeout(() => reject(new Error("请求超时")), ($settings.requestTimeout || 15) * 1000);
 
         function listener(message) {
           if (message.type === "API_RESPONSE" && message.requestId.startsWith("test-")) {
@@ -652,7 +695,7 @@
 
       {#if type === "anthropic"}
         <p class="text-[10px] text-[var(--color-text-muted)] mb-2">
-          Anthropic 不支持自动获取，已加载预设模型
+          官方 Anthropic API 不支持获取模型列表，可手动添加
         </p>
       {/if}
 
@@ -822,10 +865,11 @@
   .ccswitch-preview-btn {
     display: inline-flex;
     min-height: 28px;
+    min-width: 64px;
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 0 10px !important;
+    padding: 0 14px !important;
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
     background: rgba(255,255,255,0.05);

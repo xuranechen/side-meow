@@ -105,44 +105,105 @@ async function fetchModelList(provider) {
 
   switch (type) {
     case "openai":
+    case "anthropic":
       return fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl);
     case "gemini":
       return fetchGeminiModels(baseUrl, apiKey, customHeaders);
-    case "anthropic":
-      return fetchAnthropicModels();
     default:
       throw new Error(`不支持获取 ${type} 类型的模型列表`);
   }
 }
 
-async function fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl) {
-  const url = isFullUrl
-    ? baseUrl.replace(/\/chat\/completions\/?$/, "/models")
-    : `${baseUrl}/models`;
-  
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      ...customHeaders,
-    },
-  });
-  
-  if (!response.ok) {
-    throw new Error(`获取模型列表失败: ${response.status}`);
+const KNOWN_COMPAT_SUFFIXES = [
+  "/api/claudecode",
+  "/api/anthropic",
+  "/apps/anthropic",
+  "/api/coding",
+  "/claudecode",
+  "/anthropic",
+  "/step_plan",
+  "/coding",
+  "/claude",
+];
+
+function endsWithVersionSegment(url) {
+  const last = url.split("/").pop() || "";
+  return /^v\d+$/.test(last);
+}
+
+function stripCompatSuffix(baseUrl) {
+  for (const suffix of KNOWN_COMPAT_SUFFIXES) {
+    if (baseUrl.endsWith(suffix)) {
+      return baseUrl.slice(0, -suffix.length);
+    }
   }
-  
-  const data = await response.json();
-  const models = data.data || [];
-  
-  return models
-    .filter((m) => m.id)
-    .map((m) => ({
-      id: m.id,
-      name: formatModelName(m.id),
-      ownedBy: m.owned_by,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  return null;
+}
+
+function buildModelsUrlCandidates(baseUrl, isFullUrl) {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  if (!trimmed) return [];
+
+  if (isFullUrl) {
+    const v1Idx = trimmed.indexOf("/v1/");
+    if (v1Idx !== -1) return [`${trimmed.slice(0, v1Idx)}/v1/models`];
+    const lastSlash = trimmed.lastIndexOf("/");
+    if (lastSlash > 0) {
+      const root = trimmed.slice(0, lastSlash);
+      if (root.includes("://") && root.length > root.indexOf("://") + 3) {
+        return [`${root}/v1/models`];
+      }
+    }
+    return [];
+  }
+
+  const candidates = [];
+
+  if (endsWithVersionSegment(trimmed)) {
+    candidates.push(`${trimmed}/models`);
+    if (!trimmed.endsWith("/v1")) {
+      candidates.push(`${trimmed}/v1/models`);
+    }
+  } else {
+    candidates.push(`${trimmed}/v1/models`);
+  }
+
+  const stripped = stripCompatSuffix(trimmed);
+  if (stripped) {
+    const root = stripped.replace(/\/+$/, "");
+    if (root && root.includes("://")) {
+      candidates.push(`${root}/v1/models`);
+      candidates.push(`${root}/models`);
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+async function fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl) {
+  const candidates = buildModelsUrlCandidates(baseUrl, isFullUrl);
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { "Authorization": `Bearer ${apiKey}`, ...customHeaders },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const models = data.data || [];
+        return models
+          .filter((m) => m.id)
+          .map((m) => ({
+            id: m.id,
+            name: formatModelName(m.id),
+            ownedBy: m.owned_by,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      }
+    } catch {}
+  }
+  throw new Error("模型列表接口不可用，请手动添加模型 ID");
 }
 
 async function fetchGeminiModels(baseUrl, apiKey, customHeaders) {
@@ -195,6 +256,26 @@ function formatModelName(id) {
     .replace(/\b(Gpt|Api|Llm|Ai)\b/g, (match) => match.toUpperCase());
 }
 
+function buildChatUrlCandidates(baseUrl) {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  const candidates = [`${trimmed}/chat/completions`];
+
+  if (!endsWithVersionSegment(trimmed)) {
+    candidates.push(`${trimmed}/v3/chat/completions`);
+  }
+
+  const stripped = stripCompatSuffix(trimmed);
+  if (stripped) {
+    const root = stripped.replace(/\/+$/, "");
+    if (root && root.includes("://")) {
+      candidates.push(`${root}/v1/chat/completions`);
+      candidates.push(`${root}/chat/completions`);
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
 async function handleApiRequest(message, sender, sendResponse) {
   const { requestId, provider, messages, options = {} } = message;
   const { stream = false } = options;
@@ -204,32 +285,71 @@ async function handleApiRequest(message, sender, sendResponse) {
   
   try {
     await syncUserAgentRule(provider.headers);
-    const { url, headers, body } = buildRequest(provider, messages, options);
-    console.log("[side-meow] API Request:", url, "fullUrl:", provider.fullUrl);
-    
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: abortController.signal,
-    });
+    const { urlCandidates, headers, body } = buildRequest(provider, messages, options);
+    const candidates = provider.type === "openai"
+      ? buildChatUrlCandidates(provider.baseUrl)
+      : urlCandidates;
+    let response = null;
+    let usedUrl = "";
+
+    for (const url of candidates) {
+      console.log("[side-meow] Trying:", url);
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: abortController.signal,
+      });
+      if (res.ok || res.status !== 404) {
+        response = res;
+        usedUrl = url;
+        break;
+      }
+    }
+
+    if (!response) {
+      chrome.runtime.sendMessage({
+        type: "API_ERROR",
+        requestId,
+        error: { status: 404, message: `所有端点均返回 404:\n${candidates.join("\n")}` },
+      });
+      return;
+    }
+
+    console.log("[side-meow] Using:", usedUrl, response.status);
     
     if (!response.ok) {
       const errorText = await response.text();
-      let errorMessage;
+      let upstreamMsg = "";
       try {
         const errorJson = JSON.parse(errorText);
-        errorMessage = errorJson.error?.message || errorJson.message || errorText;
+        upstreamMsg = errorJson.error?.message || errorJson.message || "";
       } catch {
-        errorMessage = errorText;
+        upstreamMsg = errorText.slice(0, 200);
       }
-      
+
+      let friendlyMsg;
+      switch (true) {
+        case response.status === 401:
+        case response.status === 403:
+          friendlyMsg = "API Key 无效或已过期";
+          break;
+        case response.status === 429:
+          friendlyMsg = "请求频率超限，请稍后再试";
+          break;
+        case response.status >= 500:
+          friendlyMsg = "服务端错误";
+          break;
+        default:
+          friendlyMsg = upstreamMsg || `HTTP ${response.status}`;
+      }
+
       chrome.runtime.sendMessage({
         type: "API_ERROR",
         requestId,
         error: {
           status: response.status,
-          message: `[${response.status}] ${url}\n${errorMessage}`,
+          message: friendlyMsg,
         },
       });
       return;
@@ -358,12 +478,10 @@ function buildRequest(provider, messages, options) {
     }
   }
 
-  const openaiUrl = isFullUrl ? baseUrl : `${baseUrl}/chat/completions`;
-
   switch (type) {
     case "openai":
       return {
-        url: openaiUrl,
+        urlCandidates: buildChatUrlCandidates(baseUrl),
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
@@ -383,7 +501,7 @@ function buildRequest(provider, messages, options) {
       const nonSystemMessages = messages.filter((m) => m.role !== "system");
       
       return {
-        url: `${baseUrl}/v1/messages`,
+        urlCandidates: [`${baseUrl}/v1/messages`],
         headers: {
           "Content-Type": "application/json",
           "x-api-key": apiKey,
@@ -407,7 +525,7 @@ function buildRequest(provider, messages, options) {
       const geminiMessages = messages.filter((m) => m.role !== "system");
       
       return {
-        url: `${baseUrl}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`,
+        urlCandidates: [`${baseUrl}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`],
         headers: {
           "Content-Type": "application/json",
           ...customHeaders,

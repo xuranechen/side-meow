@@ -113,7 +113,7 @@
   }
 
   async function handleTest(providerId) {
-    const result = await healthCheckProvider(providerId);
+    const result = await healthCheckProvider(providerId, ($settings.requestTimeout || 15) * 1000);
     if (result?.status === "ok") {
       showToast(`连接成功 (${result.latency}ms)`, "success");
     } else if (result?.status === "error") {
@@ -233,6 +233,8 @@
   {#if showConfirm}
     <ConfirmDialog
       message="确定要删除这个配置吗？此操作不可撤销。"
+      confirmText="确认删除"
+      danger={true}
       onConfirm={() => doDelete(providerToDelete)}
       onCancel={handleCancelDelete}
     />
@@ -608,11 +610,12 @@
   }
   .ccswitch-preview-btn {
     display: inline-flex;
-    min-height: 26px;
+    min-height: 28px;
+    min-width: 64px;
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 0 10px !important;
+    padding: 0 14px !important;
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
     background: rgba(255,255,255,0.05);

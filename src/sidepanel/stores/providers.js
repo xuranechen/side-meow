@@ -108,7 +108,7 @@ export async function reorderProviders(orderedIds) {
   await saveProviders(reordered);
 }
 
-export async function healthCheckProvider(id) {
+export async function healthCheckProvider(id, timeoutMs = 15000) {
   const current = [];
   providers.subscribe((p) => current.push(...p))();
   const provider = current.find((p) => p.id === id);
@@ -119,15 +119,16 @@ export async function healthCheckProvider(id) {
   });
 
   const startTime = Date.now();
+  const requestId = "health-" + id + "-" + Date.now();
 
   try {
     const result = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("请求超时")), 15000);
+      const timeout = setTimeout(() => reject(new Error("请求超时")), timeoutMs);
 
       chrome.runtime.sendMessage(
         {
           type: "API_REQUEST",
-          requestId: "health-" + Date.now(),
+          requestId,
           provider: {
             type: provider.type,
             baseUrl: provider.baseUrl,
@@ -136,8 +137,8 @@ export async function healthCheckProvider(id) {
             headers: provider.headers || {},
             fullUrl: provider.fullUrl || false,
           },
-          messages: [{ role: "user", content: "Hi" }],
-          options: { stream: false, maxTokens: 1 },
+          messages: [{ role: "user", content: "一根0.1mm绳子对折42次后有多长？只回答结果。" }],
+          options: { stream: false, maxTokens: 10 },
         },
         (response) => {
           clearTimeout(timeout);
@@ -148,12 +149,13 @@ export async function healthCheckProvider(id) {
       );
 
       function listener(message) {
-        if (message.type === "API_RESPONSE" && message.requestId?.startsWith("health-")) {
+        if (message.requestId !== requestId) return;
+        if (message.type === "API_RESPONSE") {
           clearTimeout(timeout);
           chrome.runtime.onMessage.removeListener(listener);
           resolve(message);
         }
-        if (message.type === "API_ERROR" && message.requestId?.startsWith("health-")) {
+        if (message.type === "API_ERROR") {
           clearTimeout(timeout);
           chrome.runtime.onMessage.removeListener(listener);
           reject(new Error(message.error?.message || "连接失败"));

@@ -20,37 +20,56 @@
 ## 功能
 
 ### API 管理
-- 三种 API 类型：**OpenAI 兼容** / **Anthropic (Claude)** / **Google Gemini**
-- 在线获取模型列表、多模型管理
-- 智能解析：粘贴环境变量或配置字符串自动填充地址、密钥、模型
-- Base64 密钥自动检测与解码
-- 连接健康检测：卡片边框 + 背景色反映状态（流畅 / 阻塞 / 失败）
-- 自定义请求头 + 请求头预设
+
+| 功能 | 说明 |
+|------|------|
+| 多协议支持 | OpenAI 兼容 / Anthropic (Claude) / Google Gemini |
+| 智能解析 | 粘贴环境变量、配置字符串或 Base64 编码文本，自动提取地址、密钥、模型 |
+| 兼容子路径 | 自动尝试 `/v1/models`、`/v3/chat/completions` 等候选端点（移植自 CC Switch） |
+| Base64 解码 | 密钥和 URL 的 Base64 编码自动检测与解码 |
+| 模型获取 | 支持 9 种已知兼容子路径的智能候选 URL 生成 |
+| 连接检测 | 卡片边框 + 背景色反映状态（绿=流畅 / 黄=阻塞 / 红=失败） |
+| 重名检查 | 保存时检测同名配置，防止重复 |
+| 完整 URL 模式 | 不自动拼接 `/chat/completions`，适配特殊端点 |
+| 自定义请求头 | 支持请求头预设、自定义 User-Agent |
+| 请求头伪装 | declarativeNetRequest 替换 UA、移除浏览器特征头 |
 
 ### 聊天测试
-- 流式响应，实时输出
-- 首字用时 / 完成用时显示
-- Token 用量统计
-- 系统提示词、消息复制、重新生成
-- Markdown 渲染 + 代码高亮
-- 切换历史会话时自动跟随供应商和模型
+
+| 功能 | 说明 |
+|------|------|
+| 流式响应 | 实时输出，支持停止生成 |
+| 耗时统计 | 首字用时 / 完成用时显示（可关闭） |
+| Token 统计 | 入 Token / 出 Token 计数 |
+| 多轮对话 | 系统提示词、消息复制、重新生成 |
+| Markdown | 渲染 + 代码高亮 |
+| 会话切换 | 自动跟随供应商和模型 |
 
 ### CC Switch 导出
-- V1 Deep Link 协议
-- 目标工具选择：Claude Code / Claude Desktop / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes
-- 模型选择、批量导出、导出预览
-- 未安装自动检测
+
+| 功能 | 说明 |
+|------|------|
+| V1 协议 | `ccswitch://v1/import` Deep Link |
+| 目标工具 | Claude Code / Claude Desktop / Codex / Gemini CLI / OpenCode / OpenClaw / Hermes |
+| 模型选择 | 每个接口独立选择目标模型 |
+| 批量导出 | 多选接口逐个发送 |
+| 未安装检测 | blur 事件检测，失败自动跳转下载页 |
 
 ### 数据管理
-- JSON 格式导入 / 导出
-- 导入冲突处理（跳过 / 覆盖）
+
+| 功能 | 说明 |
+|------|------|
+| JSON 导入/导出 | 配置、会话、设置 |
+| 导入冲突 | 跳过 / 覆盖 |
+| 存储管理 | 用量显示、会话过期清理（7/30/90 天可配） |
+| 可调超时 | 请求超时 5/10/15/30/60 秒可选 |
 
 ## 快速开始
 
 ```bash
 npm install
-npm run dev        # 开发
-npm run build      # 构建到 dist/
+npm run dev          # 开发
+npm run build        # 构建到 dist/
 ```
 
 ### 加载扩展
@@ -64,9 +83,9 @@ npm run build      # 构建到 dist/
 
 | | 技术 |
 |---|---|
-| UI | Svelte 5 (runes) |
-| 构建 | Vite 6 + @crxjs/vite-plugin |
-| 样式 | Tailwind CSS 4 + CSS 变量 |
+| UI | Svelte 5 (runes: `$state`/`$derived`/`$effect`/`$props`) |
+| 构建 | Vite 6 + @crxjs/vite-plugin 2.0.0-beta.28 |
+| 样式 | Tailwind CSS 4 + CSS 变量（暗色主题） |
 | 图标 | lucide-svelte |
 | 存储 | chrome.storage.local |
 | 请求头伪装 | declarativeNetRequest |
@@ -76,16 +95,16 @@ npm run build      # 构建到 dist/
 ```
 src/
   manifest.json                  # MV3 扩展清单
-  background/index.js            # Service Worker — API 代理、请求头规则
+  background/index.js            # Service Worker — API 代理、模型获取、请求头规则、兼容子路径
   sidepanel/
     App.svelte                   # 根组件 + 页面路由
     pages/                       # Home · ProviderForm · Chat · Settings · Export
-    components/                  # ProviderCard · ChatInput · MessageBubble · ModelSelector …
+    components/                  # ProviderCard · ChatInput · MessageBubble · AppSelector · ModelSelect …
     stores/                      # providers · sessions · settings · ui
   lib/
     api/                         # 请求头预设 · 模型工具
-    ccswitch/                    # CC Switch 映射 · Deep Link
-    storage/                     # chrome-storage 封装
+    ccswitch/                    # CC Switch 映射 · Deep Link (V1 协议)
+    storage/                     # chrome-storage 封装（getStorage · setStorage · getStorageSize）
     constants.js · tokens.js · uuid.js · highlight.js
 rules/
   ua-override.json               # User-Agent 伪装规则

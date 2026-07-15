@@ -26,7 +26,7 @@
         {@const Icon = iconMap[toastData.type]}
         <Icon size={13} />
       {/if}
-      <span>{toastData.message}</span>
+      <span class="truncate max-w-full" title={toastData.message}>{toastData.message.length > 120 ? toastData.message.slice(0, 120) + "..." : toastData.message}</span>
     </div>
   </div>
 {/if}

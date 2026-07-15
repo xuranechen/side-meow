@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   autoTitle: true,
   maxChatHistory: 100,
   sessionExpireDays: 30,
+  requestTimeout: 15,
   streamByDefault: true,
   showTokenCount: true,
   showTiming: true,

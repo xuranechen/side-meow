@@ -355,26 +355,10 @@
           {/each}
         </div>
 
-        <div class="flex justify-end gap-2">
-          <button
-            class="btn-secondary"
-            onclick={() => { importConflict = null; importFile = null; }}
-          >
-            取消
-          </button>
-          <button
-            class="px-4 py-2 rounded-md border border-[var(--color-border)] hover:border-[var(--color-border-hover)] text-[12px] font-medium transition-colors"
-            style="background: var(--color-bg-tertiary); color: var(--color-text-bright);"
-            onclick={() => handleConflictResolve("skip")}
-          >
-            跳过重复
-          </button>
-          <button
-            class="btn-primary"
-            onclick={() => handleConflictResolve("overwrite")}
-          >
-            覆盖已有
-          </button>
+        <div class="ccswitch-preview-actions">
+          <button class="ccswitch-preview-btn" onclick={() => { importConflict = null; importFile = null; }}>取消</button>
+          <button class="ccswitch-preview-btn" onclick={() => handleConflictResolve("skip")}>跳过重复</button>
+          <button class="ccswitch-preview-btn ccswitch-preview-btn-primary" onclick={() => handleConflictResolve("overwrite")}>覆盖已有</button>
         </div>
       </div>
     </div>
@@ -407,20 +391,9 @@
           </li>
         </ul>
 
-        <div class="flex justify-end gap-2">
-          <button
-            class="btn-secondary"
-            onclick={cancelExport}
-          >
-            取消
-          </button>
-          <button
-            class="px-4 py-2 rounded-md text-[12px] font-medium transition-colors"
-            style="background: var(--color-warning); color: #101010;"
-            onclick={doExport}
-          >
-            继续导出
-          </button>
+        <div class="ccswitch-preview-actions">
+          <button class="ccswitch-preview-btn" onclick={cancelExport}>取消</button>
+          <button class="ccswitch-preview-btn" style="border-color: rgba(241,217,115,.5); background: rgba(241,217,115,.10); color: var(--color-warning);" onclick={doExport}>继续导出</button>
         </div>
       </div>
     </div>
@@ -558,11 +531,12 @@
   }
   .ccswitch-preview-btn {
     display: inline-flex;
-    min-height: 26px;
+    min-height: 28px;
+    min-width: 64px;
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 0 10px !important;
+    padding: 0 14px !important;
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
     background: rgba(255,255,255,0.05);

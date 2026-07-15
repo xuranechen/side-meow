@@ -5,6 +5,7 @@
   import { providers } from "../stores/providers.js";
   import { getStorageSize, formatBytes } from "../../lib/storage/chrome-storage.js";
   import { ChevronLeft, Zap, Activity, FileText, HardDrive, ChevronDown, Timer, Trash2 } from "lucide-svelte";
+  import ConfirmDialog from "../components/ConfirmDialog.svelte";
 
 
   const historyOptions = [
@@ -21,13 +22,25 @@
     { value: 0, label: "永不过期" },
   ];
 
+  const timeoutOptions = [
+    { value: 5, label: "5 秒" },
+    { value: 10, label: "10 秒" },
+    { value: 15, label: "15 秒" },
+    { value: 30, label: "30 秒" },
+    { value: 60, label: "60 秒" },
+  ];
+
   let historyOpen = $state(false);
   let expireOpen = $state(false);
+  let timeoutOpen = $state(false);
   let selectedHistoryLabel = $derived(
     historyOptions.find((option) => option.value === $settings.maxChatHistory)?.label || "50"
   );
   let selectedExpireLabel = $derived(
     expireOptions.find((option) => option.value === $settings.sessionExpireDays)?.label || "30 天"
+  );
+  let selectedTimeoutLabel = $derived(
+    timeoutOptions.find((option) => option.value === $settings.requestTimeout)?.label || "15 秒"
   );
 
   function selectHistory(value) {
@@ -40,7 +53,13 @@
     expireOpen = false;
   }
 
+  function selectTimeout(value) {
+    updateSetting("requestTimeout", value);
+    timeoutOpen = false;
+  }
+
   let storageBytes = $state(0);
+  let showCleanupConfirm = $state(false);
 
   async function refreshStorageSize() {
     storageBytes = await getStorageSize();
@@ -173,8 +192,36 @@
             {/if}
           </div>
         </div>
+        <div class="flex min-h-14 items-center justify-between py-4 border-b border-[var(--color-border)]">
+          <span class="text-[12px] text-[var(--color-text)]">请求超时时间</span>
+          <div class="settings-select-wrap">
+            <button
+              class="settings-select-trigger"
+              onclick={() => (timeoutOpen = !timeoutOpen)}
+              aria-haspopup="listbox"
+              aria-expanded={timeoutOpen}
+            >
+              <span>{selectedTimeoutLabel}</span>
+              <ChevronDown size={12} />
+            </button>
+            {#if timeoutOpen}
+              <div class="settings-select-menu" role="listbox">
+                {#each timeoutOptions as option}
+                  <button
+                    class:active={option.value === $settings.requestTimeout}
+                    onclick={() => selectTimeout(option.value)}
+                    role="option"
+                    aria-selected={option.value === $settings.requestTimeout}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </div>
         <div class="py-3">
-          <button class="cleanup-btn" onclick={handleCleanupOld}>
+          <button class="cleanup-btn" onclick={() => (showCleanupConfirm = true)}>
             <Trash2 size={12} />
             清理过期会话
           </button>
@@ -193,6 +240,15 @@
       </div>
     </section>
   </main>
+
+  {#if showCleanupConfirm}
+    <ConfirmDialog
+      message="确定清理过期会话吗？将按保留数量和过期时间清理，此操作不可撤销。"
+      confirmText="确认清理"
+      onConfirm={() => { showCleanupConfirm = false; handleCleanupOld(); }}
+      onCancel={() => (showCleanupConfirm = false)}
+    />
+  {/if}
 </div>
 
 <style>
