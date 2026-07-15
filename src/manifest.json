@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "赛德喵",
+  "version": "1.0.0",
+  "description": "侧边栏里的多模型 API 配置、测试与 CC Switch 导出助手。",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "activeTab",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/index.js",
+    "type": "module"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "赛德喵"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "minimum_chrome_version": "114",
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}
