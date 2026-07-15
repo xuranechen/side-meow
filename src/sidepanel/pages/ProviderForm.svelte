@@ -21,6 +21,7 @@
   let fetchingModels = $state(false);
   let selectedPreset = $state("");
   let decodedHint = $state("");
+  let fullUrl = $state(false);
 
   let isNew = $derived(mode === "add");
   let isEdit = $derived(mode === "edit");
@@ -44,6 +45,7 @@
           : [];
         models = provider.models || [];
         defaultModel = provider.defaultModel || "";
+        fullUrl = provider.fullUrl || false;
       }
     } else {
       baseUrl = API_TYPES[type].defaultBaseUrl;
@@ -114,7 +116,7 @@
         showToast("未获取到模型", "warning");
       }
     } catch (err) {
-      showToast("获取失败: " + err.message, "error");
+      showToast("获取失败（可手动添加模型）: " + err.message, "warning");
     } finally {
       fetchingModels = false;
     }
@@ -326,6 +328,7 @@
       headers,
       models: validModels,
       defaultModel: defaultModel || validModels[0].id,
+      fullUrl,
     };
 
     try {
@@ -521,6 +524,18 @@
         placeholder="https://api.openai.com/v1"
         style="font-family: var(--font-mono);"
       />
+      <label class="flex items-center gap-2 mt-2 cursor-pointer">
+        <button
+          class="settings-toggle relative w-8 h-[18px] rounded-full transition-all flex-shrink-0"
+          class:enabled={fullUrl}
+          style="background: {fullUrl ? 'var(--gradient-primary)' : 'var(--color-bg-elevated)'}; box-shadow: {fullUrl ? 'var(--glow-primary)' : 'inset 0 0 0 1px var(--color-border)'};"
+          onclick={() => (fullUrl = !fullUrl)}
+          aria-label={fullUrl ? "关闭完整URL" : "开启完整URL"}
+        >
+          <div class="w-3 h-3 rounded-full bg-white transition-transform ml-0.5 {fullUrl ? 'translate-x-[14px]' : ''}"></div>
+        </button>
+        <span class="text-[10px] text-[var(--color-text-muted)]">完整 URL（不自动拼接 /chat/completions）</span>
+      </label>
     </div>
 
     <div>

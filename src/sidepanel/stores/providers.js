@@ -134,6 +134,7 @@ export async function healthCheckProvider(id) {
             apiKey: provider.apiKey,
             defaultModel: provider.defaultModel || provider.models?.[0]?.id || "gpt-4o-mini",
             headers: provider.headers || {},
+            fullUrl: provider.fullUrl || false,
           },
           messages: [{ role: "user", content: "Hi" }],
           options: { stream: false, maxTokens: 1 },

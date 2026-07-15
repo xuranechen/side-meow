@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   defaultApiType: "openai",
   autoTitle: true,
   maxChatHistory: 100,
+  sessionExpireDays: 30,
   streamByDefault: true,
   showTokenCount: true,
   showTiming: true,

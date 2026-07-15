@@ -1,7 +1,10 @@
 <script>
   import { settings, updateSetting } from "../stores/settings.js";
-  import { goBack } from "../stores/ui.js";
-  import { ChevronLeft, Zap, Activity, FileText, HardDrive, ChevronDown, Timer } from "lucide-svelte";
+  import { goBack, showToast } from "../stores/ui.js";
+  import { sessions, cleanupOldSessions } from "../stores/sessions.js";
+  import { providers } from "../stores/providers.js";
+  import { getStorageSize, formatBytes } from "../../lib/storage/chrome-storage.js";
+  import { ChevronLeft, Zap, Activity, FileText, HardDrive, ChevronDown, Timer, Trash2 } from "lucide-svelte";
 
 
   const historyOptions = [
@@ -11,14 +14,48 @@
     { value: 0, label: "\u65e0\u9650" },
   ];
 
+  const expireOptions = [
+    { value: 7, label: "7 天" },
+    { value: 30, label: "30 天" },
+    { value: 90, label: "90 天" },
+    { value: 0, label: "永不过期" },
+  ];
+
   let historyOpen = $state(false);
+  let expireOpen = $state(false);
   let selectedHistoryLabel = $derived(
     historyOptions.find((option) => option.value === $settings.maxChatHistory)?.label || "50"
+  );
+  let selectedExpireLabel = $derived(
+    expireOptions.find((option) => option.value === $settings.sessionExpireDays)?.label || "30 天"
   );
 
   function selectHistory(value) {
     updateSetting("maxChatHistory", value);
     historyOpen = false;
+  }
+
+  function selectExpire(value) {
+    updateSetting("sessionExpireDays", value);
+    expireOpen = false;
+  }
+
+  let storageBytes = $state(0);
+
+  async function refreshStorageSize() {
+    storageBytes = await getStorageSize();
+  }
+
+  $effect(() => {
+    $sessions;
+    $providers;
+    refreshStorageSize();
+  });
+
+  async function handleCleanupOld() {
+    const count = await cleanupOldSessions($settings.maxChatHistory || 100, $settings.sessionExpireDays || 0);
+    await refreshStorageSize();
+    showToast(count > 0 ? `已清理 ${count} 个过期会话` : "没有需要清理的会话");
   }
 </script>
 
@@ -72,7 +109,15 @@
         存储
       </h2>
       <div class="card px-3.5">
-        <div class="flex min-h-14 items-center justify-between py-4">
+        <div class="flex min-h-14 items-center justify-between py-4 border-b border-[var(--color-border)]">
+          <span class="text-[12px] text-[var(--color-text)]">已用空间</span>
+          <span class="text-[12px] font-mono text-[var(--color-text-secondary)]">{formatBytes(storageBytes)} / 10 MB</span>
+        </div>
+        <div class="flex min-h-14 items-center justify-between py-4 border-b border-[var(--color-border)]">
+          <span class="text-[12px] text-[var(--color-text)]">数据统计</span>
+          <span class="text-[11px] font-mono text-[var(--color-text-muted)]">{$providers.length} 接口 · {$sessions.length} 会话</span>
+        </div>
+        <div class="flex min-h-14 items-center justify-between py-4 border-b border-[var(--color-border)]">
           <span class="text-[12px] text-[var(--color-text)]">最大保留会话数</span>
           <div class="settings-select-wrap">
             <button
@@ -98,7 +143,41 @@
                 {/each}
               </div>
             {/if}
+           </div>
+        </div>
+        <div class="flex min-h-14 items-center justify-between py-4 border-b border-[var(--color-border)]">
+          <span class="text-[12px] text-[var(--color-text)]">会话过期时间</span>
+          <div class="settings-select-wrap">
+            <button
+              class="settings-select-trigger"
+              onclick={() => (expireOpen = !expireOpen)}
+              aria-haspopup="listbox"
+              aria-expanded={expireOpen}
+            >
+              <span>{selectedExpireLabel}</span>
+              <ChevronDown size={12} />
+            </button>
+            {#if expireOpen}
+              <div class="settings-select-menu" role="listbox">
+                {#each expireOptions as option}
+                  <button
+                    class:active={option.value === $settings.sessionExpireDays}
+                    onclick={() => selectExpire(option.value)}
+                    role="option"
+                    aria-selected={option.value === $settings.sessionExpireDays}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
+            {/if}
           </div>
+        </div>
+        <div class="py-3">
+          <button class="cleanup-btn" onclick={handleCleanupOld}>
+            <Trash2 size={12} />
+            清理过期会话
+          </button>
         </div>
       </div>
     </section>
@@ -190,6 +269,24 @@
     font-family: var(--font-mono);
     font-size: 10px;
     line-height: 1;
+  }
+  .cleanup-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px !important;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--sunken-rgb), .32);
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    transition: border-color .16s var(--ease-out), background .16s var(--ease-out), color .16s var(--ease-out);
+  }
+  .cleanup-btn:hover {
+    border-color: var(--color-border-hover);
+    background: rgba(var(--sunken-rgb), .52);
+    color: var(--color-text-bright);
   }
 </style>
 

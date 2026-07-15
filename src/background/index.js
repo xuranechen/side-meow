@@ -97,15 +97,15 @@ async function handleFetchModels(message) {
 }
 
 async function fetchModelList(provider) {
-  const { type, baseUrl, apiKey, headers: rawHeaders = {} } = provider;
+  const { type, baseUrl, apiKey, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
   const customHeaders = {};
   for (const [key, value] of Object.entries(rawHeaders)) {
     if (key.toLowerCase() !== "user-agent") customHeaders[key] = value;
   }
-  
+
   switch (type) {
     case "openai":
-      return fetchOpenAIModels(baseUrl, apiKey, customHeaders);
+      return fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl);
     case "gemini":
       return fetchGeminiModels(baseUrl, apiKey, customHeaders);
     case "anthropic":
@@ -115,8 +115,10 @@ async function fetchModelList(provider) {
   }
 }
 
-async function fetchOpenAIModels(baseUrl, apiKey, customHeaders) {
-  const url = `${baseUrl}/models`;
+async function fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl) {
+  const url = isFullUrl
+    ? baseUrl.replace(/\/chat\/completions\/?$/, "/models")
+    : `${baseUrl}/models`;
   
   const response = await fetch(url, {
     method: "GET",
@@ -203,6 +205,7 @@ async function handleApiRequest(message, sender, sendResponse) {
   try {
     await syncUserAgentRule(provider.headers);
     const { url, headers, body } = buildRequest(provider, messages, options);
+    console.log("[side-meow] API Request:", url, "fullUrl:", provider.fullUrl);
     
     const response = await fetch(url, {
       method: "POST",
@@ -226,7 +229,7 @@ async function handleApiRequest(message, sender, sendResponse) {
         requestId,
         error: {
           status: response.status,
-          message: errorMessage,
+          message: `[${response.status}] ${url}\n${errorMessage}`,
         },
       });
       return;
@@ -344,7 +347,7 @@ async function handleStreamResponse(response, requestId, apiType) {
 }
 
 function buildRequest(provider, messages, options) {
-  const { type, baseUrl, apiKey, headers: rawHeaders = {} } = provider;
+  const { type, baseUrl, apiKey, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
   const { stream = false, temperature = 0.7, maxTokens = 4096 } = options;
   const model = options.model || provider.defaultModel;
 
@@ -354,11 +357,13 @@ function buildRequest(provider, messages, options) {
       customHeaders[key] = value;
     }
   }
-  
+
+  const openaiUrl = isFullUrl ? baseUrl : `${baseUrl}/chat/completions`;
+
   switch (type) {
     case "openai":
       return {
-        url: `${baseUrl}/chat/completions`,
+        url: openaiUrl,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,

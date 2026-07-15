@@ -2,7 +2,8 @@
   import { providers, setActiveProvider, deleteProvider, reorderProviders, healthCheckProvider } from "../stores/providers.js";
   import { navigateTo, showToast } from "../stores/ui.js";
   import { settings } from "../stores/settings.js";
-  import { createSession } from "../stores/sessions.js";
+  import { sessions, createSession } from "../stores/sessions.js";
+  import { getStorageSize, formatBytes } from "../../lib/storage/chrome-storage.js";
   import ProviderCard from "../components/ProviderCard.svelte";
   import EmptyState from "../components/EmptyState.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
@@ -20,6 +21,13 @@
   let ccswitchData = $state(null);
   let ccswitchApp = $state("claude");
   let ccswitchModel = $state("");
+  let storageBytes = $state(0);
+
+  $effect(() => {
+    $providers;
+    $sessions;
+    getStorageSize().then((b) => { storageBytes = b; });
+  });
 
   function handleAdd() {
     navigateTo("provider-form", { mode: "add" });
@@ -182,6 +190,14 @@
       </button>
     </div>
   </header>
+
+  <div class="storage-bar">
+    <span>{$providers.length} 个接口</span>
+    <span class="storage-dot"></span>
+    <span>{$sessions.length} 个会话</span>
+    <span class="storage-dot"></span>
+    <span>{formatBytes(storageBytes)} / 10 MB</span>
+  </div>
 
   <main class="page-main home-main flex-1 overflow-y-auto">
     {#if sortedProviders.length === 0}
@@ -350,6 +366,25 @@
 
 <style>
   .home-header { min-height: 52px; }
+  .storage-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 14px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--color-text-muted);
+    border-bottom: 1px solid var(--color-border);
+    background: rgba(var(--sunken-rgb), .24);
+    letter-spacing: .03em;
+  }
+  .storage-dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--color-text-muted);
+    opacity: .4;
+  }
   .brand-mark {
     position: relative;
     display: grid;

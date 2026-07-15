@@ -160,22 +160,37 @@ export async function clearAllSessions() {
   activeSessionId.set(null);
 }
 
-export async function cleanupOldSessions(maxCount = 100) {
-  if (maxCount <= 0) return;
-  
+export async function cleanupOldSessions(maxCount = 100, expireDays = 0) {
   const current = [];
   sessions.subscribe((s) => current.push(...s))();
-  
-  if (current.length <= maxCount) return;
-  
-  const sorted = [...current].sort((a, b) => b.updatedAt - a.updatedAt);
-  const toKeep = sorted.slice(0, maxCount);
-  const toRemove = sorted.slice(maxCount);
-  
+
+  let toRemove = [];
+
+  if (expireDays > 0) {
+    const cutoff = Date.now() - expireDays * 86400000;
+    toRemove = current.filter((s) => s.updatedAt < cutoff);
+  }
+
+  if (maxCount > 0) {
+    const sorted = [...current].sort((a, b) => b.updatedAt - a.updatedAt);
+    const overflow = sorted.slice(maxCount);
+    for (const s of overflow) {
+      if (!toRemove.some((r) => r.id === s.id)) {
+        toRemove.push(s);
+      }
+    }
+  }
+
+  if (toRemove.length === 0) return 0;
+
+  const removeIds = new Set(toRemove.map((s) => s.id));
+  const toKeep = current.filter((s) => !removeIds.has(s.id));
   await saveSessions(toKeep);
-  
+
   const activeId = await getStorage("active_session_id");
-  if (toRemove.some((s) => s.id === activeId)) {
+  if (removeIds.has(activeId)) {
     await setActiveSession(toKeep[0]?.id || null);
   }
+
+  return toRemove.length;
 }

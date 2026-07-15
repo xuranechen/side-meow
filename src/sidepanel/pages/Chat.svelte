@@ -80,6 +80,7 @@
         apiKey: $activeProvider.apiKey,
         defaultModel: $activeSession.modelId,
         headers: $activeProvider.headers || {},
+        fullUrl: $activeProvider.fullUrl || false,
       },
       messages,
       options: { stream: true, model: $activeSession.modelId },
