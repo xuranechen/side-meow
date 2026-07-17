@@ -504,61 +504,63 @@
             <div class="flex items-center gap-1.5 mb-0.5">
               <span class="w-2 h-2 rounded-full" style="background-color: {apiType.color}; box-shadow: 0 0 6px {apiType.color};"></span>
               <span class="text-[11px] font-semibold text-[var(--color-text-bright)]">{apiType.name}</span>
-  {#if showPasteDialog}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
-      style="background: rgba(0,0,0,.68);"
-      onclick={() => (showPasteDialog = false)}
-      onkeydown={(e) => e.key === "Escape" && (showPasteDialog = false)}
-    >
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="card animate-slide-up" style="width: min(440px, calc(100% - 24px)); padding: 12px;" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-[13px] font-semibold text-[var(--color-text-bright)]">智能解析配置</h3>
-          <button
-            class="p-1 rounded hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)]"
-            onclick={() => (showPasteDialog = false)}
-          >
-            <X size={14} />
-          </button>
-        </div>
-
-        <p class="text-[10px] text-[var(--color-text-muted)] mb-2">
-          粘贴环境变量、配置字符串或含 Key/URL 的文本，自动提取接口地址和密钥
-        </p>
-
-        <textarea
-          bind:value={pasteInput}
-          rows="8"
-          placeholder={'例如：\nexport ANTHROPIC_API_KEY="sk-ant-xxx"\nexport ANTHROPIC_BASE_URL="https://api.anthropic.com/v1"\n\n或：OPENAI_API_KEY=c2stb3BlbmFpLXggeHggeHg=（Base64 自动解码）'}
-          class="resize-none w-full"
-          style="font-family: var(--font-mono); font-size: 11px; padding: 8px 10px; background: rgba(var(--sunken-rgb), .42); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-bright);"
-        ></textarea>
-
-        <div class="flex justify-end gap-2 mt-3">
-          <button
-            class="ccswitch-preview-btn"
-            onclick={() => (showPasteDialog = false)}
-          >
-            取消
-          </button>
-          <button
-            class="ccswitch-preview-btn ccswitch-preview-btn-primary"
-            onclick={applyParsedConfig}
-          >
-            解析并填入
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-</div>
+            </div>
             <p class="text-[10px] text-[var(--color-text-muted)] truncate">{apiType.description}</p>
           </button>
         {/each}
       </div>
     </div>
+
+    {#if showPasteDialog}
+      <div
+        class="fixed inset-0 z-50 flex items-center justify-center animate-fade-in"
+        style="background: rgba(0,0,0,.68);"
+        onclick={() => (showPasteDialog = false)}
+        onkeydown={(e) => e.key === "Escape" && (showPasteDialog = false)}
+        role="button"
+        tabindex="-1"
+        aria-label="关闭"
+      >
+        <div class="card animate-slide-up" style="width: min(440px, calc(100% - 24px)); padding: 12px;" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-[13px] font-semibold text-[var(--color-text-bright)]">智能解析配置</h3>
+            <button
+              class="p-1 rounded hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)]"
+              onclick={() => (showPasteDialog = false)}
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          <p class="text-[10px] text-[var(--color-text-muted)] mb-2">
+            粘贴环境变量、配置字符串或含 Key/URL 的文本，自动提取接口地址和密钥
+          </p>
+
+          <textarea
+            bind:value={pasteInput}
+            rows="8"
+            placeholder={'例如：\nexport ANTHROPIC_API_KEY="sk-ant-xxx"\nexport ANTHROPIC_BASE_URL="https://api.anthropic.com/v1"\n\n或：OPENAI_API_KEY=c2stb3BlbmFpLXggeHggeHg=（Base64 自动解码）'}
+            class="resize-none w-full"
+            style="font-family: var(--font-mono); font-size: 11px; padding: 8px 10px; background: rgba(var(--sunken-rgb), .42); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-bright);"
+          ></textarea>
+
+          <div class="flex justify-end gap-2 mt-3">
+            <button
+              class="ccswitch-preview-btn"
+              onclick={() => (showPasteDialog = false)}
+            >
+              取消
+            </button>
+            <button
+              class="ccswitch-preview-btn ccswitch-preview-btn-primary"
+              onclick={applyParsedConfig}
+            >
+              解析并填入
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <div>
       <button

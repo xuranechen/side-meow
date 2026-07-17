@@ -2,8 +2,6 @@ import { writable } from "svelte/store";
 import { getStorage, setStorage } from "../../lib/storage/chrome-storage.js";
 
 const DEFAULT_SETTINGS = {
-  theme: "system",
-  language: "zh",
   defaultApiType: "openai",
   autoTitle: true,
   maxChatHistory: 100,
@@ -13,6 +11,8 @@ const DEFAULT_SETTINGS = {
   showTokenCount: true,
   showTiming: true,
   confirmDelete: true,
+  temperature: 0.7,
+  maxTokens: 0,
   exportVersion: 1,
 };
 
@@ -59,13 +59,4 @@ export async function updateSettings(updates) {
 export async function resetSettings() {
   settings.set({ ...DEFAULT_SETTINGS });
   await setStorage("settings", DEFAULT_SETTINGS);
-}
-
-export function getThemeClass(theme) {
-  if (theme === "system") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  }
-  return theme;
 }

@@ -75,13 +75,9 @@ export async function getAllStorage() {
 }
 
 export async function clearAllStorage() {
-  const all = await getAllStorage();
-  const keys = Object.keys(all).map((k) => STORAGE_PREFIX + k);
-  if (keys.length === 0) return;
-  
   return new Promise((resolve, reject) => {
     try {
-      chrome.storage.local.remove(keys, () => {
+      chrome.storage.local.clear(() => {
         if (chrome.runtime.lastError) {
           reject(chrome.runtime.lastError);
         } else {

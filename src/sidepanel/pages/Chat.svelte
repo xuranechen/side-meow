@@ -13,6 +13,7 @@
   } from "../stores/sessions.js";
   import { providers, activeProvider, setActiveProvider } from "../stores/providers.js";
   import { pageParams, goBack, showToast } from "../stores/ui.js";
+  import { settings } from "../stores/settings.js";
   import MessageBubble from "../components/MessageBubble.svelte";
   import ChatInput from "../components/ChatInput.svelte";
   import ModelSelector from "../components/ModelSelector.svelte";
@@ -35,6 +36,11 @@
     if ($activeSession?.messages) {
       tick().then(scrollToBottom);
     }
+  });
+
+  $effect(() => {
+    const sysMsg = $activeSession?.messages?.find((m) => m.role === "system");
+    systemPrompt = sysMsg?.content || "";
   });
 
   onMount(async () => {
@@ -109,10 +115,12 @@
       },
       messages,
       options: {
-        stream: true,
+        stream: $settings.streamByDefault,
         model: $activeSession.modelId,
         thinking: true,
         thinkingBudget: 10000,
+        temperature: $settings.temperature,
+        maxTokens: $settings.maxTokens || undefined,
       },
     });
   }
@@ -289,6 +297,12 @@
     }
   }
 
+  async function handleDeleteSession(id) {
+    if ($settings.confirmDelete && !confirm("确定要删除这个会话吗？")) return;
+    await deleteSession(id);
+    showSessionList = false;
+  }
+
   async function handleNewSession() {
     if (!$activeProvider) return;
     await createSession($activeProvider.id, $activeProvider.defaultModel, systemPrompt);
@@ -400,7 +414,7 @@
         setActiveSession(id);
         showSessionList = false;
       }}
-      onDelete={(id) => deleteSession(id)}
+      onDelete={handleDeleteSession}
       onNew={handleNewSession}
     />
   {/if}

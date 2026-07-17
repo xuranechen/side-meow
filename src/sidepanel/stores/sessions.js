@@ -1,6 +1,7 @@
 import { writable, derived } from "svelte/store";
 import { getStorage, setStorage } from "../../lib/storage/chrome-storage.js";
 import { generateId } from "../../lib/uuid.js";
+import { settings } from "./settings.js";
 
 export const sessions = writable([]);
 export const activeSessionId = writable(null);
@@ -123,7 +124,10 @@ export async function addMessage(sessionId, message) {
     };
     
     const messages = [...s.messages, newMessage];
+    let autoTitleEnabled = true;
+    settings.subscribe((v) => { autoTitleEnabled = v.autoTitle; })();
     const title =
+      autoTitleEnabled &&
       messages.filter((m) => m.role === "user").length === 1 &&
       message.role === "user"
         ? message.content.slice(0, 50) + (message.content.length > 50 ? "..." : "")

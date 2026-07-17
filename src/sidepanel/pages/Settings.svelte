@@ -3,7 +3,7 @@
   import { goBack, showToast } from "../stores/ui.js";
   import { sessions, cleanupOldSessions } from "../stores/sessions.js";
   import { providers } from "../stores/providers.js";
-  import { getStorageSize, formatBytes } from "../../lib/storage/chrome-storage.js";
+  import { clearAllStorage, getStorageSize, formatBytes } from "../../lib/storage/chrome-storage.js";
   import { ChevronLeft, Zap, Activity, FileText, HardDrive, ChevronDown, Timer, Trash2 } from "lucide-svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
 
@@ -60,6 +60,7 @@
 
   let storageBytes = $state(0);
   let showCleanupConfirm = $state(false);
+  let showClearAllConfirm = $state(false);
 
   async function refreshStorageSize() {
     storageBytes = await getStorageSize();
@@ -75,6 +76,11 @@
     const count = await cleanupOldSessions($settings.maxChatHistory || 100, $settings.sessionExpireDays || 0);
     await refreshStorageSize();
     showToast(count > 0 ? `已清理 ${count} 个过期会话` : "没有需要清理的会话");
+  }
+
+  async function handleClearAll() {
+    await clearAllStorage();
+    window.location.reload();
   }
 </script>
 
@@ -119,6 +125,41 @@
             </button>
           </div>
         {/each}
+        <div class="flex min-h-14 items-center justify-between py-4 border-b border-[var(--color-border)]">
+          <span class="text-[12px] leading-5 flex items-center gap-2.5 text-[var(--color-text)]">
+            <Zap size={13} class="text-[var(--color-text-muted)]" />
+            Temperature
+          </span>
+          <div class="flex items-center gap-2">
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.1"
+              value={$settings.temperature}
+              oninput={(e) => updateSetting("temperature", parseFloat(e.target.value))}
+              class="w-20 accent-[var(--color-primary)]"
+            />
+            <span class="text-[11px] font-mono text-[var(--color-text-muted)] w-6 text-right">{$settings.temperature}</span>
+          </div>
+        </div>
+        <div class="flex min-h-14 items-center justify-between py-4">
+          <span class="text-[12px] leading-5 flex items-center gap-2.5 text-[var(--color-text)]">
+            <Zap size={13} class="text-[var(--color-text-muted)]" />
+            Max Tokens
+          </span>
+          <div class="flex items-center gap-2">
+            <input
+              type="number"
+              min="0"
+              step="256"
+              value={$settings.maxTokens}
+              oninput={(e) => updateSetting("maxTokens", parseInt(e.target.value) || 0)}
+              placeholder="0 = 自动"
+              class="w-20 px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-[11px] font-mono text-[var(--color-text-bright)] text-right"
+            />
+          </div>
+        </div>
       </div>
     </section>
 
@@ -220,10 +261,14 @@
             {/if}
           </div>
         </div>
-        <div class="py-3">
+        <div class="py-3 flex gap-2">
           <button class="cleanup-btn" onclick={() => (showCleanupConfirm = true)}>
             <Trash2 size={12} />
             清理过期会话
+          </button>
+          <button class="cleanup-btn" style="color: var(--color-error);" onclick={() => (showClearAllConfirm = true)}>
+            <Trash2 size={12} />
+            清除全部数据
           </button>
         </div>
       </div>
@@ -247,6 +292,16 @@
       confirmText="确认清理"
       onConfirm={() => { showCleanupConfirm = false; handleCleanupOld(); }}
       onCancel={() => (showCleanupConfirm = false)}
+    />
+  {/if}
+
+  {#if showClearAllConfirm}
+    <ConfirmDialog
+      message="确定要清除全部数据吗？所有配置、会话、设置将被永久删除，此操作不可撤销。"
+      confirmText="全部清除"
+      danger={true}
+      onConfirm={() => { showClearAllConfirm = false; handleClearAll(); }}
+      onCancel={() => (showClearAllConfirm = false)}
     />
   {/if}
 </div>

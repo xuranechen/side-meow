@@ -4,6 +4,8 @@
   import { settings } from "../stores/settings.js";
   import { goBack, showToast } from "../stores/ui.js";
   import { addProvider, updateProvider } from "../stores/providers.js";
+  import { saveSessions } from "../stores/sessions.js";
+  import { updateSettings } from "../stores/settings.js";
   import { CCSwitchMapper } from "../../lib/ccswitch/mapper.js";
   import { generateDeepLink, tryOpenCCSwitchBatch, getCCSwitchDownloadUrl } from "../../lib/ccswitch/deeplink.js";
   import { ChevronLeft, Download, Upload, FileJson, AlertTriangle, ExternalLink, X } from "lucide-svelte";
@@ -126,7 +128,21 @@
       }
     }
 
-    showToast(`成功导入 ${importedCount} 个配置`);
+    if (data.sessions && Array.isArray(data.sessions)) {
+      const existingIds = new Set($sessions.map((s) => s.id));
+      const newSessions = data.sessions.filter((s) => !existingIds.has(s.id));
+      if (newSessions.length > 0) {
+        const merged = [...newSessions, ...$sessions];
+        await saveSessions(merged);
+        importedCount += newSessions.length;
+      }
+    }
+
+    if (data.settings && typeof data.settings === "object") {
+      await updateSettings(data.settings);
+    }
+
+    showToast(`成功导入 ${importedCount} 项`);
     importFile = null;
     importData = null;
     importConflict = null;

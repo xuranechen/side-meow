@@ -105,8 +105,9 @@ async function fetchModelList(provider) {
 
   switch (type) {
     case "openai":
-    case "anthropic":
       return fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl);
+    case "anthropic":
+      return fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl).catch(() => fetchAnthropicModels());
     case "gemini":
       return fetchGeminiModels(baseUrl, apiKey, customHeaders);
     default:

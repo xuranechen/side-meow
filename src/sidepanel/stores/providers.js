@@ -37,16 +37,17 @@ export async function saveProviders(newProviders) {
 }
 
 export async function addProvider(provider) {
+  const current = [];
+  providers.subscribe((p) => current.push(...p))();
+  const maxIndex = current.reduce((max, p) => Math.max(max, p.sortIndex || 0), -1);
+
   const newProvider = {
     id: generateId(),
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    sortIndex: 0,
+    sortIndex: maxIndex + 1,
     ...provider,
   };
-  
-  const current = [];
-  providers.subscribe((p) => current.push(...p))();
   
   const updated = [...current, newProvider];
   await saveProviders(updated);

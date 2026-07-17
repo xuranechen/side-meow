@@ -5,13 +5,19 @@
   import ThinkingBlock from "./ThinkingBlock.svelte";
   import WebSearchBlock from "./WebSearchBlock.svelte";
   import { Copy, RefreshCw, Check, Wrench } from "lucide-svelte";
+  import { estimateCost, formatCost } from "../../lib/tokens.js";
 
-  let { message, onCopy, onRegenerate } = $props();
+  let { message, apiType, onCopy, onRegenerate } = $props();
 
   let isUser = $derived(message.role === "user");
   let isAssistant = $derived(message.role === "assistant");
   let isStreaming = $derived(message.metadata?.streaming);
   let copied = $state(false);
+  let cost = $derived(() => {
+    const u = message.metadata?.tokenUsage;
+    if (!u || !apiType || !message.metadata?.model) return null;
+    return estimateCost(apiType, message.metadata.model, u.promptTokens, u.completionTokens);
+  });
 
   const HTML_TAGS = new Set([
     "p","div","span","a","img","h1","h2","h3","h4","h5","h6","ul","ol","li",
@@ -19,8 +25,7 @@
     "em","strong","b","i","u","s","strike","br","hr","sub","sup","mark","small",
     "del","ins","abbr","cite","dl","dt","dd","figure","figcaption","details",
     "summary","button","form","input","select","option","textarea","label",
-    "video","audio","source","iframe","svg","path","style","script","html",
-    "head","body","title","meta","link",
+    "video","audio","source","svg","path",
   ]);
 
   function escapeXmlTags(content) {
@@ -122,7 +127,7 @@
         {/if}
 
         {#if message.metadata.tokenUsage && $settings.showTokenCount}
-          <span>入{message.metadata.tokenUsage.promptTokens} 出{message.metadata.tokenUsage.completionTokens}</span>
+          <span>入{message.metadata.tokenUsage.promptTokens} 出{message.metadata.tokenUsage.completionTokens}{#if cost() !== null} {formatCost(cost())}{/if}</span>
         {/if}
 
         {#if message.metadata.model}
