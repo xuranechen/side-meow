@@ -1,14 +1,15 @@
 ﻿<script>
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import {
     sessions,
     activeSessionId,
     activeSession,
     createSession,
     addMessage,
-    updateLastAssistantMessage,
     deleteSession,
     setActiveSession,
+    persistSessionsSoon,
+    persistSessionsNow,
   } from "../stores/sessions.js";
   import { providers, activeProvider, setActiveProvider } from "../stores/providers.js";
   import { pageParams, goBack, showToast } from "../stores/ui.js";
@@ -26,6 +27,9 @@
   let showSystemPrompt = $state(false);
   let requestStartTime = $state(0);
   let firstTokenTime = $state(0);
+  let pendingThinkingSegments = $state([]);
+  let pendingThinkingText = $state("");
+  let pendingWebSearchCalls = $state([]);
 
   $effect(() => {
     if ($activeSession?.messages) {
@@ -53,15 +57,35 @@
     }
   }
 
+  function updateStreamingAssistant(updates) {
+    const sessionId = $activeSessionId;
+    if (!sessionId) return;
+    sessions.update((items) => items.map((session) => {
+      if (session.id !== sessionId) return session;
+      const messages = [...session.messages];
+      const index = messages.findLastIndex((message) => message.role === "assistant");
+      if (index >= 0) messages[index] = { ...messages[index], ...updates };
+      return { ...session, messages, updatedAt: Date.now() };
+    }));
+    persistSessionsSoon();
+  }
+
   async function handleSend(content) {
     if (!$activeSession || !$activeProvider || streaming) return;
 
     await addMessage($activeSession.id, { role: "user", content });
-    await addMessage($activeSession.id, { role: "assistant", content: "", metadata: { streaming: true } });
+    await addMessage($activeSession.id, {
+      role: "assistant",
+      content: "",
+      metadata: { streaming: true },
+    });
 
     streaming = true;
     requestStartTime = performance.now();
     firstTokenTime = 0;
+    pendingThinkingSegments = [];
+    pendingThinkingText = "";
+    pendingWebSearchCalls = [];
     await tick();
 
     const requestId = "chat-" + Date.now();
@@ -81,9 +105,15 @@
         defaultModel: $activeSession.modelId,
         headers: $activeProvider.headers || {},
         fullUrl: $activeProvider.fullUrl || false,
+        tools: $activeProvider.tools || null,
       },
       messages,
-      options: { stream: true, model: $activeSession.modelId },
+      options: {
+        stream: true,
+        model: $activeSession.modelId,
+        thinking: true,
+        thinkingBudget: 10000,
+      },
     });
   }
 
@@ -92,8 +122,41 @@
 
     if (message.type === "API_STREAM_CHUNK") {
       if (!firstTokenTime) firstTokenTime = performance.now();
-      updateLastAssistantMessage($activeSessionId, {
+      updateStreamingAssistant({
         content: ($activeSession?.messages?.filter((m) => m.role === "assistant").pop()?.content || "") + message.token,
+      });
+    }
+
+    if (message.type === "API_THINKING_CHUNK") {
+      pendingThinkingText += message.token;
+      updateStreamingAssistant({
+        _thinking: pendingThinkingText,
+      });
+    }
+
+    if (message.type === "API_THINKING_DONE") {
+      const text = message.text || pendingThinkingText;
+      if (text && pendingThinkingSegments[pendingThinkingSegments.length - 1] !== text) {
+        pendingThinkingSegments = [...pendingThinkingSegments, text];
+      }
+      pendingThinkingText = "";
+      updateStreamingAssistant({
+        _thinking: null,
+        thinkingSegments: pendingThinkingSegments.length > 0 ? [...pendingThinkingSegments] : null,
+      });
+      persistSessionsNow();
+    }
+
+    if (message.type === "API_TOOL_CALLS") {
+      updateStreamingAssistant({
+        toolCalls: message.toolCalls,
+      });
+    }
+
+    if (message.type === "API_WEB_SEARCH_CALLS") {
+      pendingWebSearchCalls = message.webSearchCalls || [];
+      updateStreamingAssistant({
+        webSearchCalls: pendingWebSearchCalls,
       });
     }
 
@@ -103,37 +166,122 @@
       const lastMsg = $activeSession?.messages?.filter((m) => m.role === "assistant").pop();
       if (lastMsg) {
         const now = performance.now();
-        updateLastAssistantMessage($activeSessionId, {
+        const fallbackSegments = pendingThinkingText
+          ? [...pendingThinkingSegments, pendingThinkingText]
+          : [...pendingThinkingSegments];
+        const finalSegments = Array.isArray(message.thinkingSegments)
+          ? message.thinkingSegments
+          : fallbackSegments;
+        const finalWebSearchCalls = Array.isArray(message.webSearchCalls)
+          ? message.webSearchCalls
+          : pendingWebSearchCalls;
+        const finalToolCalls = Array.isArray(message.toolCalls)
+          ? message.toolCalls
+          : (lastMsg.toolCalls || []);
+        const updates = {
+          content: typeof message.content === "string" ? message.content : lastMsg.content,
+          _thinking: null,
+          thinkingSegments: finalSegments.length > 0 ? finalSegments : null,
+          webSearchCalls: finalWebSearchCalls.length > 0 ? finalWebSearchCalls : null,
+          toolCalls: finalToolCalls.length > 0 ? finalToolCalls : null,
           metadata: {
             ...lastMsg.metadata,
             streaming: false,
             tokenUsage: message.usage,
+            model: message.model || lastMsg.metadata?.model,
+            incomplete: message.incomplete || false,
+            incompleteReason: message.incompleteDetails?.reason || null,
             firstTokenMs: firstTokenTime ? Math.round(firstTokenTime - requestStartTime) : null,
             totalMs: Math.round(now - requestStartTime),
           },
+        };
+        // 同步更新 store 并立即落盘，避免面板关闭时丢失思考数据
+        const current = [];
+        sessions.subscribe((s) => current.push(...s))();
+        const updated = current.map((s) => {
+          if (s.id !== $activeSessionId) return s;
+          const messages = [...s.messages];
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "assistant") { messages[i] = { ...messages[i], ...updates }; break; }
+          }
+          return { ...s, messages, updatedAt: Date.now() };
         });
+        sessions.set(updated);
+        persistSessionsNow(updated);
       }
+      pendingThinkingSegments = [];
+      pendingThinkingText = "";
+      pendingWebSearchCalls = [];
     }
 
     if (message.type === "API_ERROR") {
       streaming = false;
       currentAbort = null;
-      updateLastAssistantMessage($activeSessionId, {
-        content: `错误: ${message.error.message}`,
-        metadata: { streaming: false, error: message.error.message, statusCode: message.error.status },
+      const lastMsg = $activeSession?.messages?.filter((m) => m.role === "assistant").pop();
+      const allSegments = pendingThinkingText
+        ? [...pendingThinkingSegments, pendingThinkingText]
+        : [...pendingThinkingSegments];
+      const streamedContent = lastMsg?.content || "";
+      const updates = {
+        content: streamedContent || `错误: ${message.error.message}`,
+        _thinking: undefined,
+        thinkingSegments: allSegments.length > 0 ? allSegments : undefined,
+        metadata: {
+          ...lastMsg?.metadata,
+          streaming: false,
+          error: message.error.message,
+          statusCode: message.error.status,
+        },
+      };
+      const current = [];
+      sessions.subscribe((s) => current.push(...s))();
+      const updated = current.map((s) => {
+        if (s.id !== $activeSessionId) return s;
+        const messages = [...s.messages];
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === "assistant") { messages[i] = { ...messages[i], ...updates }; break; }
+        }
+        return { ...s, messages, updatedAt: Date.now() };
       });
+      sessions.set(updated);
+      persistSessionsNow(updated);
+      pendingThinkingSegments = [];
+      pendingThinkingText = "";
+      pendingWebSearchCalls = [];
     }
 
     if (message.type === "API_CANCELLED") {
       streaming = false;
       currentAbort = null;
-      updateLastAssistantMessage($activeSessionId, {
-        metadata: { streaming: false, cancelled: true },
+      const lastMsg = $activeSession?.messages?.filter((m) => m.role === "assistant").pop();
+      const allSegments = pendingThinkingText
+        ? [...pendingThinkingSegments, pendingThinkingText]
+        : [...pendingThinkingSegments];
+      const updates = {
+        _thinking: undefined,
+        thinkingSegments: allSegments.length > 0 ? allSegments : undefined,
+        metadata: { ...lastMsg?.metadata, streaming: false, cancelled: true },
+      };
+      const current = [];
+      sessions.subscribe((s) => current.push(...s))();
+      const updated = current.map((s) => {
+        if (s.id !== $activeSessionId) return s;
+        const messages = [...s.messages];
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === "assistant") { messages[i] = { ...messages[i], ...updates }; break; }
+        }
+        return { ...s, messages, updatedAt: Date.now() };
       });
+      sessions.set(updated);
+      persistSessionsNow(updated);
+      pendingThinkingSegments = [];
+      pendingThinkingText = "";
+      pendingWebSearchCalls = [];
     }
   }
 
   chrome.runtime.onMessage.addListener(handleStreamChunk);
+  onDestroy(() => chrome.runtime.onMessage.removeListener(handleStreamChunk));
 
   function handleStop() {
     if (currentAbort) {

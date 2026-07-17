@@ -9,7 +9,8 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import { CCSwitchMapper } from "../../lib/ccswitch/mapper.js";
   import { generateDeepLink, tryOpenCCSwitch, getCCSwitchDownloadUrl } from "../../lib/ccswitch/deeplink.js";
-  import { Plus, Download, Settings as SettingsIcon, History, X, Copy } from "lucide-svelte";
+  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap } from "lucide-svelte";
+  import { getStorage, setStorage } from "../../lib/storage/chrome-storage.js";
   import AppSelector from "../components/AppSelector.svelte";
   import ModelSelect from "../components/ModelSelect.svelte";
 
@@ -22,6 +23,55 @@
   let ccswitchApp = $state("claude");
   let ccswitchModel = $state("");
   let storageBytes = $state(0);
+  let testAllCooldown = $state(0);
+  let testAllRunning = $state(false);
+  let cooldownTimer = $state(null);
+
+  const TEST_ALL_COOLDOWN = 5 * 60 * 1000;
+
+  $effect(() => {
+    getStorage("lastTestAllTime").then((ts) => {
+      if (!ts) return;
+      const elapsed = Date.now() - ts;
+      if (elapsed < TEST_ALL_COOLDOWN) {
+        startCooldownTimer(TEST_ALL_COOLDOWN - elapsed);
+      }
+    });
+    return () => { if (cooldownTimer) clearInterval(cooldownTimer); };
+  });
+
+  function startCooldownTimer(remaining) {
+    testAllCooldown = remaining;
+    if (cooldownTimer) clearInterval(cooldownTimer);
+    cooldownTimer = setInterval(() => {
+      testAllCooldown = Math.max(0, testAllCooldown - 1000);
+      if (testAllCooldown <= 0) {
+        clearInterval(cooldownTimer);
+        cooldownTimer = null;
+      }
+    }, 1000);
+  }
+
+  function formatCooldown(ms) {
+    const m = Math.floor(ms / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  async function handleTestAll() {
+    if (testAllCooldown > 0 || testAllRunning) return;
+    testAllRunning = true;
+    startCooldownTimer(TEST_ALL_COOLDOWN);
+    const timeout = ($settings.requestTimeout || 15) * 1000;
+    const results = await Promise.all(
+      sortedProviders.map((p) => healthCheckProvider(p.id, timeout))
+    );
+    await setStorage("lastTestAllTime", Date.now());
+    const ok = results.filter((r) => r?.status === "ok").length;
+    const fail = results.length - ok;
+    testAllRunning = false;
+    showToast(`测试完成: ${ok} 成功, ${fail} 失败`, fail === 0 ? "success" : "warning");
+  }
 
   $effect(() => {
     $providers;
@@ -197,6 +247,24 @@
     <span>{$sessions.length} 个会话</span>
     <span class="storage-dot"></span>
     <span>{formatBytes(storageBytes)} / 10 MB</span>
+    {#if sortedProviders.length > 1}
+      <span class="storage-dot"></span>
+      <button
+        class="storage-test-all {testAllCooldown > 0 || testAllRunning ? 'storage-test-disabled' : ''}"
+        onclick={handleTestAll}
+        disabled={testAllCooldown > 0 || testAllRunning}
+        title={testAllCooldown > 0 ? `冷却中 ${formatCooldown(testAllCooldown)}` : "一键测试全部接口"}
+      >
+        <Zap size={10} />
+        {#if testAllRunning}
+          <span>测试中…</span>
+        {:else if testAllCooldown > 0}
+          <span>{formatCooldown(testAllCooldown)}</span>
+        {:else}
+          <span>全部测试</span>
+        {/if}
+      </button>
+    {/if}
   </div>
 
   <main class="page-main home-main flex-1 overflow-y-auto">
@@ -386,6 +454,26 @@
     border-radius: 50%;
     background: var(--color-text-muted);
     opacity: .4;
+  }
+  .storage-test-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-primary);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .03em;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  .storage-test-all:hover { opacity: .8; }
+  .storage-test-disabled {
+    opacity: .5;
+    cursor: not-allowed;
+    color: var(--color-text-muted);
   }
   .brand-mark {
     position: relative;

@@ -23,6 +23,7 @@
   let selectedPreset = $state("");
   let decodedHint = $state("");
   let fullUrl = $state(false);
+  let toolsJson = $state("");
 
   let isNew = $derived(mode === "add");
   let isEdit = $derived(mode === "edit");
@@ -47,6 +48,7 @@
         models = provider.models || [];
         defaultModel = provider.defaultModel || "";
         fullUrl = provider.fullUrl || false;
+        toolsJson = provider.tools ? JSON.stringify(provider.tools, null, 2) : "";
       }
     } else {
       baseUrl = API_TYPES[type].defaultBaseUrl;
@@ -363,6 +365,20 @@
       }
     }
 
+    let tools = null;
+    if (toolsJson.trim()) {
+      try {
+        tools = JSON.parse(toolsJson);
+        if (!Array.isArray(tools)) {
+          showToast("工具定义必须是 JSON 数组", "error");
+          return;
+        }
+      } catch (e) {
+        showToast("工具定义 JSON 格式错误: " + e.message, "error");
+        return;
+      }
+    }
+
     const providerData = {
       name: name.trim(),
       type,
@@ -372,6 +388,7 @@
       models: validModels,
       defaultModel: defaultModel || validModels[0].id,
       fullUrl,
+      tools,
     };
 
     try {
@@ -403,7 +420,17 @@
         apiKey: apiKey.trim(),
         defaultModel: defaultModel || models[0]?.id || "gpt-4o-mini",
         headers: {},
+        fullUrl,
       };
+
+      if (toolsJson.trim()) {
+        try {
+          provider.tools = JSON.parse(toolsJson);
+          if (!Array.isArray(provider.tools)) throw new Error("工具定义必须是 JSON 数组");
+        } catch (e) {
+          throw new Error("工具定义 JSON 格式错误: " + e.message);
+        }
+      }
 
       for (const h of customHeaders) {
         if (h.key.trim() && h.value.trim()) {
@@ -666,6 +693,23 @@
     </div>
 
     <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-[11px] font-medium text-[var(--color-text-muted)]">工具定义（Tools）</span>
+        {#if toolsJson.trim()}
+          <span class="text-[9px] text-[var(--color-success)]">已配置</span>
+        {/if}
+      </div>
+      <textarea
+        bind:value={toolsJson}
+        placeholder={'[\n  { "type": "web_search" }\n]'}
+        rows="6"
+        class="resize-none w-full"
+        style="font-family: var(--font-mono); font-size: 11px; padding: 8px 10px; background: rgba(var(--sunken-rgb), .42); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-bright);"
+      ></textarea>
+      <p class="text-[9px] text-[var(--color-text-muted)] mt-1"><code>type=web_search</code> 会自动使用 Responses API，并分开展示联网搜索、思考过程和最终回复</p>
+    </div>
+
+    <div>
       <div class="flex items-center justify-between mb-2">
         <span class="text-[11px] font-medium text-[var(--color-text-muted)]">
           模型列表 <span class="text-[var(--color-error)]">*</span>
@@ -894,4 +938,3 @@
     box-shadow: var(--glow-primary);
   }
 </style>
-

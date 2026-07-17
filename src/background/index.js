@@ -256,11 +256,13 @@ function formatModelName(id) {
     .replace(/\b(Gpt|Api|Llm|Ai)\b/g, (match) => match.toUpperCase());
 }
 
-function buildChatUrlCandidates(baseUrl) {
+function buildChatUrlCandidates(baseUrl, isFullUrl = false) {
   const trimmed = baseUrl.replace(/\/+$/, "");
-  const candidates = [`${trimmed}/chat/completions`];
+  if (isFullUrl) return [trimmed];
 
+  const candidates = [`${trimmed}/chat/completions`];
   if (!endsWithVersionSegment(trimmed)) {
+    candidates.push(`${trimmed}/v1/chat/completions`);
     candidates.push(`${trimmed}/v3/chat/completions`);
   }
 
@@ -276,54 +278,83 @@ function buildChatUrlCandidates(baseUrl) {
   return [...new Set(candidates)];
 }
 
+function buildResponsesUrlCandidates(baseUrl, isFullUrl = false) {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  if (isFullUrl) return [trimmed];
+
+  const candidates = [`${trimmed}/responses`];
+  if (!endsWithVersionSegment(trimmed)) {
+    candidates.push(`${trimmed}/v1/responses`);
+  }
+  return [...new Set(candidates)];
+}
+
+function usesResponsesApi(provider) {
+  return provider.type === "openai" &&
+    Array.isArray(provider.tools) &&
+    provider.tools.some((tool) => tool?.type === "web_search");
+}
+
+async function tryEndpoints(urlCandidates, headers, body, signal) {
+  let response = null;
+  let usedUrl = "";
+  for (const url of urlCandidates) {
+    console.log("[side-meow] Trying:", url);
+    const candidate = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (candidate.ok || candidate.status !== 404) {
+      response = candidate;
+      usedUrl = url;
+      break;
+    }
+  }
+  return { response, usedUrl };
+}
+
 async function handleApiRequest(message, sender, sendResponse) {
   const { requestId, provider, messages, options = {} } = message;
   const { stream = false } = options;
-  
   const abortController = new AbortController();
   activeRequests.set(requestId, abortController);
-  
+
   try {
     await syncUserAgentRule(provider.headers);
-    const { urlCandidates, headers, body } = buildRequest(provider, messages, options);
-    const candidates = provider.type === "openai"
-      ? buildChatUrlCandidates(provider.baseUrl)
-      : urlCandidates;
-    let response = null;
-    let usedUrl = "";
+    let request = buildRequest(provider, messages, options);
+    let { response, usedUrl } = await tryEndpoints(
+      request.urlCandidates, request.headers, request.body, abortController.signal,
+    );
 
-    for (const url of candidates) {
-      console.log("[side-meow] Trying:", url);
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: abortController.signal,
-      });
-      if (res.ok || res.status !== 404) {
-        response = res;
-        usedUrl = url;
-        break;
-      }
+    // 部分接口不认思考参数（如 reasoning/thinking 触发 4xx/5xx），自动去参重试一次
+    if (options.thinking && response && !response.ok && ![401, 403, 429].includes(response.status)) {
+      console.log("[side-meow] Thinking request failed with", response.status, "- retrying without thinking params");
+      request = buildRequest(provider, messages, { ...options, thinking: false });
+      ({ response, usedUrl } = await tryEndpoints(
+        request.urlCandidates, request.headers, request.body, abortController.signal,
+      ));
     }
+
+    const { responseFormat = "chat" } = request;
 
     if (!response) {
       chrome.runtime.sendMessage({
         type: "API_ERROR",
         requestId,
-        error: { status: 404, message: `所有端点均返回 404:\n${candidates.join("\n")}` },
+        error: { status: 404, message: `所有端点均返回 404:\n${request.urlCandidates.join("\n")}` },
       });
       return;
     }
 
     console.log("[side-meow] Using:", usedUrl, response.status);
-    
     if (!response.ok) {
       const errorText = await response.text();
       let upstreamMsg = "";
       try {
         const errorJson = JSON.parse(errorText);
-        upstreamMsg = errorJson.error?.message || errorJson.message || "";
+        upstreamMsg = errorJson.error?.message || errorJson.detail || errorJson.message || "";
       } catch {
         upstreamMsg = errorText.slice(0, 200);
       }
@@ -347,41 +378,34 @@ async function handleApiRequest(message, sender, sendResponse) {
       chrome.runtime.sendMessage({
         type: "API_ERROR",
         requestId,
-        error: {
-          status: response.status,
-          message: friendlyMsg,
-        },
+        error: { status: response.status, message: friendlyMsg },
       });
       return;
     }
-    
+
     if (stream) {
-      await handleStreamResponse(response, requestId, provider.type);
+      if (responseFormat === "responses") {
+        await handleResponsesStream(response, requestId);
+      } else {
+        await handleStreamResponse(response, requestId, provider.type);
+      }
     } else {
       const data = await response.json();
-      const parsed = parseResponse(provider.type, data);
-      
       chrome.runtime.sendMessage({
         type: "API_RESPONSE",
         requestId,
         success: true,
-        data: parsed,
+        data: parseResponse(provider.type, data, responseFormat),
       });
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      chrome.runtime.sendMessage({
-        type: "API_CANCELLED",
-        requestId,
-      });
+      chrome.runtime.sendMessage({ type: "API_CANCELLED", requestId });
     } else {
       chrome.runtime.sendMessage({
         type: "API_ERROR",
         requestId,
-        error: {
-          status: 0,
-          message: err.message || "Network error",
-        },
+        error: { status: 0, message: err.message || "Network error" },
       });
     }
   } finally {
@@ -390,210 +414,582 @@ async function handleApiRequest(message, sender, sendResponse) {
 }
 
 function handleApiCancel(message) {
-  const { requestId } = message;
-  const controller = activeRequests.get(requestId);
+  const controller = activeRequests.get(message.requestId);
   if (controller) {
     controller.abort();
-    activeRequests.delete(requestId);
+    activeRequests.delete(message.requestId);
+  }
+}
+
+function normalizeToolCalls(toolCallsMap) {
+  return [...toolCallsMap.values()].map((toolCall) => ({
+    id: toolCall.id || "",
+    name: toolCall.name || "",
+    arguments: toolCall.arguments || "",
+  }));
+}
+
+// 某些中转在 HTTP 200 的 SSE 流里直接推一行裸 JSON 错误（不带 "data: " 前缀），
+// 或在 data 负载里携带 {"error": {...}}，这里统一提取错误消息
+function extractErrorMessage(parsed) {
+  const err = parsed?.error;
+  if (!err) return null;
+  if (typeof err === "string") return err;
+  const message = err.message || err.type;
+  if (message) return message;
+  const serialized = JSON.stringify(err);
+  return serialized && serialized !== "{}" ? serialized.slice(0, 200) : null;
+}
+
+function extractBareErrorLine(line) {
+  if (!line.startsWith("{")) return null;
+  try {
+    return extractErrorMessage(JSON.parse(line));
+  } catch {
+    return null;
   }
 }
 
 async function handleStreamResponse(response, requestId, apiType) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
+  const toolCallsMap = new Map();
+  const anthropicBlocks = new Map();
   let buffer = "";
   let usage = null;
-  
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-        
-        const data = trimmed.slice(6);
-        if (data === "[DONE]") {
-          chrome.runtime.sendMessage({
-            type: "API_STREAM_DONE",
-            requestId,
-            usage,
-          });
-          return;
-        }
-        
-        try {
-          const parsed = JSON.parse(data);
-          const token = extractStreamToken(apiType, parsed);
-          
-          if (token) {
-            chrome.runtime.sendMessage({
-              type: "API_STREAM_CHUNK",
-              requestId,
-              token: token.content,
-              done: false,
-            });
-          }
-          
-          const streamUsage = extractStreamUsage(apiType, parsed);
-          if (streamUsage) {
-            usage = streamUsage;
-          }
-        } catch (e) {
-          // Skip malformed chunks
-        }
-      }
+  let responseModel = null;
+  let currentThinking = "";
+  let finishReason = null;
+  let completed = false;
+
+  function flushThinking() {
+    if (!currentThinking) return;
+    chrome.runtime.sendMessage({ type: "API_THINKING_DONE", requestId, text: currentThinking });
+    currentThinking = "";
+  }
+
+  function fail(message) {
+    if (completed) return;
+    completed = true;
+    flushThinking();
+    chrome.runtime.sendMessage({
+      type: "API_ERROR",
+      requestId,
+      error: { status: 0, message },
+    });
+  }
+
+  function finish() {
+    if (completed) return;
+    completed = true;
+    flushThinking();
+    if (toolCallsMap.size > 0) {
+      chrome.runtime.sendMessage({
+        type: "API_TOOL_CALLS",
+        requestId,
+        toolCalls: normalizeToolCalls(toolCallsMap),
+      });
     }
-    
     chrome.runtime.sendMessage({
       type: "API_STREAM_DONE",
       requestId,
       usage,
+      model: responseModel,
+      incomplete: finishReason === "length",
+      incompleteDetails: finishReason === "length" ? { reason: "max_output_tokens" } : null,
     });
-  } catch (err) {
-    if (err.name !== "AbortError") {
+  }
+
+  function processEvent(data) {
+    if (completed) return;
+    if (data === "[DONE]") {
+      finish();
+      return;
+    }
+
+    const parsed = JSON.parse(data);
+    const errorMessage = extractErrorMessage(parsed);
+    if (errorMessage) {
+      fail(errorMessage);
+      return;
+    }
+    if (parsed.model) responseModel = parsed.model;
+    if (apiType === "anthropic") {
+      const index = parsed.index ?? 0;
+      if (parsed.type === "content_block_start") {
+        const block = parsed.content_block || {};
+        anthropicBlocks.set(index, block.type || "");
+        if (block.type === "tool_use") {
+          toolCallsMap.set(index, {
+            id: block.id || "",
+            name: block.name || "",
+            arguments: block.input && Object.keys(block.input).length > 0 ? JSON.stringify(block.input) : "",
+          });
+        }
+      }
+      if (parsed.type === "content_block_delta" && parsed.delta?.type === "input_json_delta") {
+        const call = toolCallsMap.get(index);
+        if (call) call.arguments += parsed.delta.partial_json || "";
+      }
+      if (parsed.type === "content_block_stop") {
+        if (anthropicBlocks.get(index) === "thinking") flushThinking();
+        anthropicBlocks.delete(index);
+      }
+    }
+
+    const delta = parsed.choices?.[0]?.delta;
+    for (const toolCall of delta?.tool_calls || []) {
+      const index = toolCall.index ?? 0;
+      const current = toolCallsMap.get(index) || { id: "", name: "", arguments: "" };
+      if (toolCall.id) current.id = toolCall.id;
+      if (toolCall.function?.name) current.name = toolCall.function.name;
+      if (toolCall.function?.arguments) current.arguments += toolCall.function.arguments;
+      toolCallsMap.set(index, current);
+    }
+
+    const token = extractStreamToken(apiType, parsed);
+    if (token?.thinking) {
+      currentThinking += token.thinking;
       chrome.runtime.sendMessage({
-        type: "API_ERROR",
+        type: "API_THINKING_CHUNK",
         requestId,
-        error: { status: 0, message: err.message },
+        token: token.thinking,
       });
     }
+    if (token?.content) {
+      flushThinking();
+      chrome.runtime.sendMessage({
+        type: "API_STREAM_CHUNK",
+        requestId,
+        token: token.content,
+        done: false,
+      });
+    }
+
+    const streamUsage = extractStreamUsage(apiType, parsed);
+    if (streamUsage) {
+      usage = { ...usage, ...streamUsage };
+      if (usage.promptTokens != null && usage.completionTokens != null) {
+        usage.totalTokens ??= usage.promptTokens + usage.completionTokens;
+      }
+    }
+
+    const rawFinish = parsed.choices?.[0]?.finish_reason
+      || (parsed.type === "message_delta" ? parsed.delta?.stop_reason : null)
+      || parsed.candidates?.[0]?.finishReason;
+    if (rawFinish) {
+      finishReason = rawFinish === "max_tokens" || rawFinish === "MAX_TOKENS" ? "length" : rawFinish;
+    }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) {
+          const bareError = extractBareErrorLine(trimmed);
+          if (bareError) fail(bareError);
+          continue;
+        }
+        try { processEvent(trimmed.slice(6)); } catch {}
+      }
+    }
+
+    buffer += decoder.decode();
+    const finalLine = buffer.trim();
+    if (finalLine.startsWith("data: ")) {
+      try { processEvent(finalLine.slice(6)); } catch {}
+    } else {
+      const bareError = extractBareErrorLine(finalLine);
+      if (bareError) fail(bareError);
+    }
+    finish();
+  } catch (err) {
+    if (err.name === "AbortError") throw err;
+    fail(err.message);
+  }
+}
+
+function normalizeResponsesUsage(usage) {
+  if (!usage) return null;
+  return {
+    promptTokens: usage.input_tokens,
+    completionTokens: usage.output_tokens,
+    totalTokens: usage.total_tokens ?? ((usage.input_tokens || 0) + (usage.output_tokens || 0)),
+  };
+}
+
+function normalizeWebSearchCall(item) {
+  const action = item?.action || {};
+  return {
+    id: item?.id || "",
+    status: item?.status || "completed",
+    actionType: action.type || "search",
+    query: action.query || action.pattern || "",
+    url: action.url || "",
+    sources: (action.sources || [])
+      .filter((source) => source?.url)
+      .map((source) => ({ type: source.type || "url", url: source.url })),
+  };
+}
+
+async function handleResponsesStream(response, requestId) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const webSearchCalls = new Map();
+  let buffer = "";
+  let currentThinking = "";
+  let completed = false;
+
+  function flushThinking() {
+    if (!currentThinking) return;
+    chrome.runtime.sendMessage({ type: "API_THINKING_DONE", requestId, text: currentThinking });
+    currentThinking = "";
+  }
+
+  function sendSearchCalls() {
+    chrome.runtime.sendMessage({
+      type: "API_WEB_SEARCH_CALLS",
+      requestId,
+      webSearchCalls: [...webSearchCalls.values()],
+    });
+  }
+
+  function fail(message) {
+    if (completed) return;
+    completed = true;
+    flushThinking();
+    chrome.runtime.sendMessage({
+      type: "API_ERROR",
+      requestId,
+      error: { status: 0, message },
+    });
+  }
+
+  function finish(responseData = null) {
+    if (completed) return;
+    completed = true;
+    flushThinking();
+    if (webSearchCalls.size > 0) sendSearchCalls();
+    // 用最终响应快照回填完整内容，弥补中转丢 delta 造成的截断
+    let final = null;
+    if (responseData) {
+      try { final = parseResponsesResponse(responseData); } catch {}
+    }
+    chrome.runtime.sendMessage({
+      type: "API_STREAM_DONE",
+      requestId,
+      usage: normalizeResponsesUsage(responseData?.usage),
+      model: responseData?.model || null,
+      incomplete: responseData?.status === "incomplete",
+      incompleteDetails: responseData?.incomplete_details || null,
+      ...(final?.content ? { content: final.content } : {}),
+      ...(final?.thinkingSegments ? { thinkingSegments: final.thinkingSegments } : {}),
+      ...(final?.webSearchCalls ? { webSearchCalls: final.webSearchCalls } : {}),
+    });
+  }
+
+  function processEvent(data) {
+    if (completed) return;
+    if (!data || data === "[DONE]") {
+      if (data === "[DONE]") finish();
+      return;
+    }
+
+    const event = JSON.parse(data);
+    if (!event.type) {
+      const errorMessage = extractErrorMessage(event);
+      if (errorMessage) fail(errorMessage);
+      return;
+    }
+    switch (event.type) {
+      case "response.reasoning_summary_text.delta":
+        currentThinking += event.delta || "";
+        chrome.runtime.sendMessage({
+          type: "API_THINKING_CHUNK",
+          requestId,
+          token: event.delta || "",
+        });
+        break;
+      case "response.reasoning_summary_text.done":
+        flushThinking();
+        break;
+      case "response.output_item.done":
+        if (event.item?.type === "web_search_call") {
+          const call = normalizeWebSearchCall(event.item);
+          webSearchCalls.set(call.id, call);
+          sendSearchCalls();
+        }
+        break;
+      case "response.output_text.delta":
+      case "response.refusal.delta":
+        flushThinking();
+        if (event.delta) {
+          chrome.runtime.sendMessage({
+            type: "API_STREAM_CHUNK",
+            requestId,
+            token: event.delta,
+            done: false,
+          });
+        }
+        break;
+      case "response.completed":
+      case "response.incomplete":
+        finish(event.response);
+        break;
+      case "response.failed":
+      case "error":
+        fail(event.response?.error?.message || event.error?.message || event.message || "Responses API 请求失败");
+        break;
+    }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) {
+          const bareError = extractBareErrorLine(trimmed);
+          if (bareError) fail(bareError);
+          continue;
+        }
+        try { processEvent(trimmed.slice(6)); } catch {}
+      }
+    }
+
+    buffer += decoder.decode();
+    const finalLine = buffer.trim();
+    if (finalLine.startsWith("data: ")) {
+      try { processEvent(finalLine.slice(6)); } catch {}
+    } else {
+      const bareError = extractBareErrorLine(finalLine);
+      if (bareError) fail(bareError);
+    }
+    finish();
+  } catch (err) {
+    if (err.name === "AbortError") throw err;
+    fail(err.message);
   }
 }
 
 function buildRequest(provider, messages, options) {
   const { type, baseUrl, apiKey, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
-  const { stream = false, temperature = 0.7, maxTokens = 4096 } = options;
+  const { stream = false, temperature = 0.7 } = options;
+  const hasExplicitMaxTokens = Number.isFinite(options.maxTokens) && options.maxTokens > 0;
+  const maxTokens = hasExplicitMaxTokens ? options.maxTokens : 4096;
   const model = options.model || provider.defaultModel;
-
   const customHeaders = {};
   for (const [key, value] of Object.entries(rawHeaders)) {
-    if (key.toLowerCase() !== "user-agent") {
-      customHeaders[key] = value;
-    }
+    if (key.toLowerCase() !== "user-agent") customHeaders[key] = value;
   }
 
   switch (type) {
-    case "openai":
-      return {
-        urlCandidates: buildChatUrlCandidates(baseUrl),
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          ...customHeaders,
-        },
-        body: {
+    case "openai": {
+      const { thinking = false, thinkingBudget = 10000 } = options;
+      const headers = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        ...customHeaders,
+      };
+
+      if (usesResponsesApi(provider)) {
+        const body = {
           model,
-          messages: messages.map((m) => ({ role: m.role, content: m.content })),
+          input: messages.map((message) => ({ role: message.role, content: message.content })),
           stream,
           temperature,
-          max_tokens: maxTokens,
-        },
+          tools: provider.tools,
+          tool_choice: "auto",
+        };
+        if (hasExplicitMaxTokens) body.max_output_tokens = maxTokens;
+        if (thinking) body.reasoning = { summary: "auto" };
+        return {
+          responseFormat: "responses",
+          urlCandidates: buildResponsesUrlCandidates(baseUrl, isFullUrl),
+          headers,
+          body,
+        };
+      }
+
+      const body = {
+        model,
+        messages: messages.map((message) => ({ role: message.role, content: message.content })),
+        stream,
+        temperature,
       };
-    
-    case "anthropic":
-      const systemMessage = messages.find((m) => m.role === "system");
-      const nonSystemMessages = messages.filter((m) => m.role !== "system");
-      
+      // 不强制默认 max_tokens：思考类模型的推理也计入输出，4096 会导致回复被 length 截断
+      if (hasExplicitMaxTokens) body.max_tokens = maxTokens;
+      if (thinking) body.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+      if (provider.tools) body.tools = provider.tools;
       return {
-        urlCandidates: [`${baseUrl}/v1/messages`],
+        responseFormat: "chat",
+        urlCandidates: buildChatUrlCandidates(baseUrl, isFullUrl),
+        headers,
+        body,
+      };
+    }
+
+    case "anthropic": {
+      const systemMessage = messages.find((message) => message.role === "system");
+      const nonSystemMessages = messages.filter((message) => message.role !== "system");
+      const { thinking = false, thinkingBudget = 10000 } = options;
+      // Anthropic 的 thinking 预算计入 max_tokens，未显式配置时抬高上限给正文留空间
+      const anthropicMaxTokens = !hasExplicitMaxTokens && thinking
+        ? thinkingBudget + 8192
+        : maxTokens;
+      const body = {
+        model,
+        max_tokens: anthropicMaxTokens,
+        messages: nonSystemMessages.map((message) => ({ role: message.role, content: message.content })),
+        ...(systemMessage ? { system: systemMessage.content } : {}),
+        stream,
+      };
+      if (thinking) {
+        body.thinking = {
+          type: "enabled",
+          budget_tokens: Math.min(thinkingBudget, anthropicMaxTokens - 1),
+        };
+      }
+      return {
+        urlCandidates: [`${baseUrl.replace(/\/+$/, "")}/v1/messages`],
         headers: {
           "Content-Type": "application/json",
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
           ...customHeaders,
         },
-        body: {
-          model,
-          max_tokens: maxTokens,
-          messages: nonSystemMessages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          ...(systemMessage ? { system: systemMessage.content } : {}),
-          stream,
-        },
+        body,
       };
-    
-    case "gemini":
-      const geminiSystem = messages.find((m) => m.role === "system");
-      const geminiMessages = messages.filter((m) => m.role !== "system");
-      
+    }
+
+    case "gemini": {
+      const systemMessage = messages.find((message) => message.role === "system");
+      const nonSystemMessages = messages.filter((message) => message.role !== "system");
+      const { thinking = false, thinkingBudget = 10000 } = options;
+      const generationConfig = { temperature };
+      if (hasExplicitMaxTokens) generationConfig.maxOutputTokens = maxTokens;
+      if (thinking) generationConfig.thinkingConfig = { thinkingBudget };
       return {
-        urlCandidates: [`${baseUrl}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`],
-        headers: {
-          "Content-Type": "application/json",
-          ...customHeaders,
-        },
+        urlCandidates: [`${baseUrl.replace(/\/+$/, "")}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`],
+        headers: { "Content-Type": "application/json", ...customHeaders },
         body: {
-          contents: geminiMessages.map((m) => ({
-            role: m.role === "assistant" ? "model" : "user",
-            parts: [{ text: m.content }],
+          contents: nonSystemMessages.map((message) => ({
+            role: message.role === "assistant" ? "model" : "user",
+            parts: [{ text: message.content }],
           })),
-          generationConfig: {
-            temperature,
-            maxOutputTokens: maxTokens,
-          },
-          ...(geminiSystem
-            ? { systemInstruction: { parts: [{ text: geminiSystem.content }] } }
-            : {}),
+          generationConfig,
+          ...(systemMessage ? { systemInstruction: { parts: [{ text: systemMessage.content }] } } : {}),
         },
       };
-    
+    }
+
     default:
       throw new Error(`Unsupported API type: ${type}`);
   }
 }
 
-function parseResponse(apiType, data) {
+function parseResponsesResponse(data) {
+  const output = Array.isArray(data.output) ? data.output : [];
+  const thinkingSegments = output
+    .filter((item) => item.type === "reasoning")
+    .flatMap((item) => item.summary || [])
+    .filter((part) => part.type === "summary_text" && part.text)
+    .map((part) => part.text);
+  const webSearchCalls = output
+    .filter((item) => item.type === "web_search_call")
+    .map(normalizeWebSearchCall);
+  const content = output
+    .filter((item) => item.type === "message")
+    .flatMap((item) => item.content || [])
+    .filter((part) => part.type === "output_text" || part.type === "refusal")
+    .map((part) => part.text || part.refusal || "")
+    .join("\n\n");
+
+  return {
+    content,
+    thinkingSegments: thinkingSegments.length > 0 ? thinkingSegments : null,
+    webSearchCalls: webSearchCalls.length > 0 ? webSearchCalls : null,
+    usage: normalizeResponsesUsage(data.usage),
+    finishReason: data.status,
+    model: data.model,
+  };
+}
+
+function parseResponse(apiType, data, responseFormat = "chat") {
+  if (responseFormat === "responses") return parseResponsesResponse(data);
+
   switch (apiType) {
-    case "openai":
+    case "openai": {
+      const message = data.choices?.[0]?.message || {};
+      const content = typeof message.content === "string"
+        ? message.content
+        : (message.content || [])
+            .filter((part) => part?.type === "text" || part?.type === "output_text")
+            .map((part) => part.text || "")
+            .join("\n\n");
+      const toolCalls = (message.tool_calls || []).map((call) => ({
+        id: call.id || "",
+        name: call.function?.name || "",
+        arguments: call.function?.arguments || "",
+      }));
       return {
-        content: data.choices?.[0]?.message?.content || "",
-        usage: data.usage
-          ? {
-              promptTokens: data.usage.prompt_tokens,
-              completionTokens: data.usage.completion_tokens,
-              totalTokens: data.usage.total_tokens,
-            }
-          : null,
+        content,
+        thinkingSegments: message.reasoning_content ? [message.reasoning_content] : null,
+        toolCalls: toolCalls.length > 0 ? toolCalls : null,
+        usage: data.usage ? {
+          promptTokens: data.usage.prompt_tokens,
+          completionTokens: data.usage.completion_tokens,
+          totalTokens: data.usage.total_tokens,
+        } : null,
         finishReason: data.choices?.[0]?.finish_reason,
         model: data.model,
       };
-    
-    case "anthropic":
+    }
+
+    case "anthropic": {
+      const blocks = data.content || [];
+      const toolCalls = blocks
+        .filter((block) => block.type === "tool_use")
+        .map((block) => ({ id: block.id || "", name: block.name || "", arguments: JSON.stringify(block.input || {}) }));
       return {
-        content: data.content?.[0]?.text || "",
-        usage: data.usage
-          ? {
-              promptTokens: data.usage.input_tokens,
-              completionTokens: data.usage.output_tokens,
-              totalTokens: data.usage.input_tokens + data.usage.output_tokens,
-            }
-          : null,
+        content: blocks.filter((block) => block.type === "text").map((block) => block.text || "").join("\n\n"),
+        thinkingSegments: blocks.filter((block) => block.type === "thinking").map((block) => block.thinking || ""),
+        toolCalls: toolCalls.length > 0 ? toolCalls : null,
+        usage: data.usage ? {
+          promptTokens: data.usage.input_tokens,
+          completionTokens: data.usage.output_tokens,
+          totalTokens: data.usage.input_tokens + data.usage.output_tokens,
+        } : null,
         finishReason: data.stop_reason,
         model: data.model,
       };
-    
-    case "gemini":
+    }
+
+    case "gemini": {
+      const parts = data.candidates?.[0]?.content?.parts || [];
       return {
-        content: data.candidates?.[0]?.content?.parts?.[0]?.text || "",
-        usage: data.usageMetadata
-          ? {
-              promptTokens: data.usageMetadata.promptTokenCount,
-              completionTokens: data.usageMetadata.candidatesTokenCount,
-              totalTokens: data.usageMetadata.totalTokenCount,
-            }
-          : null,
+        content: parts.filter((part) => !part.thought && part.text).map((part) => part.text).join("\n\n"),
+        thinkingSegments: parts.filter((part) => part.thought && part.text).map((part) => part.text),
+        usage: data.usageMetadata ? {
+          promptTokens: data.usageMetadata.promptTokenCount,
+          completionTokens: data.usageMetadata.candidatesTokenCount,
+          totalTokens: data.usageMetadata.totalTokenCount,
+        } : null,
         finishReason: data.candidates?.[0]?.finishReason,
         model: null,
       };
-    
+    }
+
     default:
       throw new Error(`Unsupported API type: ${apiType}`);
   }
@@ -601,20 +997,32 @@ function parseResponse(apiType, data) {
 
 function extractStreamToken(apiType, data) {
   switch (apiType) {
-    case "openai":
-      const content = data.choices?.[0]?.delta?.content;
-      return content ? { content } : null;
-    
+    case "openai": {
+      const delta = data.choices?.[0]?.delta;
+      if (!delta || delta.tool_calls) return null;
+      const result = {};
+      if (delta.reasoning_content) result.thinking = delta.reasoning_content;
+      if (typeof delta.content === "string" && delta.content) result.content = delta.content;
+      return Object.keys(result).length > 0 ? result : null;
+    }
+
     case "anthropic":
-      if (data.type === "content_block_delta") {
-        return { content: data.delta?.text || "" };
-      }
+      if (data.type !== "content_block_delta") return null;
+      if (data.delta?.type === "thinking_delta") return { thinking: data.delta.thinking || "" };
+      if (data.delta?.type === "text_delta") return { content: data.delta.text || "" };
       return null;
-    
-    case "gemini":
-      const geminiContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      return geminiContent ? { content: geminiContent } : null;
-    
+
+    case "gemini": {
+      const parts = data.candidates?.[0]?.content?.parts || [];
+      const result = {};
+      for (const part of parts) {
+        if (!part.text) continue;
+        if (part.thought) result.thinking = (result.thinking || "") + part.text;
+        else result.content = (result.content || "") + part.text;
+      }
+      return Object.keys(result).length > 0 ? result : null;
+    }
+
     default:
       return null;
   }
@@ -623,36 +1031,24 @@ function extractStreamToken(apiType, data) {
 function extractStreamUsage(apiType, data) {
   switch (apiType) {
     case "openai":
-      return data.usage
-        ? {
-            promptTokens: data.usage.prompt_tokens,
-            completionTokens: data.usage.completion_tokens,
-            totalTokens: data.usage.total_tokens,
-          }
-        : null;
-    
+      return data.usage ? {
+        promptTokens: data.usage.prompt_tokens,
+        completionTokens: data.usage.completion_tokens,
+        totalTokens: data.usage.total_tokens,
+      } : null;
+
     case "anthropic":
-      if (data.type === "message_delta") {
-        return {
-          completionTokens: data.usage?.output_tokens,
-        };
-      }
-      if (data.type === "message_start") {
-        return {
-          promptTokens: data.message?.usage?.input_tokens,
-        };
-      }
+      if (data.type === "message_delta") return { completionTokens: data.usage?.output_tokens };
+      if (data.type === "message_start") return { promptTokens: data.message?.usage?.input_tokens };
       return null;
-    
+
     case "gemini":
-      return data.usageMetadata
-        ? {
-            promptTokens: data.usageMetadata.promptTokenCount,
-            completionTokens: data.usageMetadata.candidatesTokenCount,
-            totalTokens: data.usageMetadata.totalTokenCount,
-          }
-        : null;
-    
+      return data.usageMetadata ? {
+        promptTokens: data.usageMetadata.promptTokenCount,
+        completionTokens: data.usageMetadata.candidatesTokenCount,
+        totalTokens: data.usageMetadata.totalTokenCount,
+      } : null;
+
     default:
       return null;
   }

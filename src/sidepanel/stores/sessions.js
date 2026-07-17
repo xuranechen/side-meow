@@ -17,8 +17,27 @@ export async function loadSessions() {
   loading.set(true);
   try {
     const data = await getStorage("sessions");
-    sessions.set(Array.isArray(data) ? data : []);
-    
+    const list = Array.isArray(data) ? data : [];
+
+    // 修复被中断（关闭面板 / SW 重启）而残留 streaming 标记的消息，
+    // 否则历史会话会永远显示流式光标且隐藏思考/元信息
+    let dirty = false;
+    for (const session of list) {
+      for (const message of session.messages || []) {
+        if (message?.metadata?.streaming) {
+          if (message._thinking && !message.thinkingSegments?.length) {
+            message.thinkingSegments = [message._thinking];
+          }
+          message._thinking = null;
+          message.metadata = { ...message.metadata, streaming: false, interrupted: true };
+          dirty = true;
+        }
+      }
+    }
+
+    sessions.set(list);
+    if (dirty) await setStorage("sessions", list);
+
     const activeId = await getStorage("active_session_id");
     if (activeId) {
       activeSessionId.set(activeId);
@@ -29,6 +48,28 @@ export async function loadSessions() {
   } finally {
     loading.set(false);
   }
+}
+
+// 流式期间节流落盘：只在内存改动的中间态定期写入 storage，
+// 这样即使流未走到 DONE（关闭面板/异常）也能保留已流出的内容与思考
+let persistTimer = null;
+export function persistSessionsSoon(delay = 500) {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    const current = [];
+    sessions.subscribe((s) => current.push(...s))();
+    setStorage("sessions", current).catch((err) => console.error("Failed to persist sessions:", err));
+  }, delay);
+}
+
+export function persistSessionsNow(data) {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  const current = data || (() => { const s = []; sessions.subscribe((v) => s.push(...v))(); return s; })();
+  setStorage("sessions", current).catch((err) => console.error("Failed to persist sessions:", err));
 }
 
 export async function saveSessions(newSessions) {
