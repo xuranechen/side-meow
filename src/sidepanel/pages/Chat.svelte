@@ -18,6 +18,7 @@
   import ChatInput from "../components/ChatInput.svelte";
   import ModelSelector from "../components/ModelSelector.svelte";
   import SessionList from "../components/SessionList.svelte";
+  import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import { ChevronLeft, History, Plus, SlidersHorizontal, MessageSquare } from "lucide-svelte";
 
   let messagesContainer = $state(null);
@@ -31,6 +32,8 @@
   let pendingThinkingSegments = $state([]);
   let pendingThinkingText = $state("");
   let pendingWebSearchCalls = $state([]);
+  let showDeleteConfirm = $state(false);
+  let sessionToDelete = $state(null);
 
   $effect(() => {
     if ($activeSession?.messages) {
@@ -301,9 +304,27 @@
   }
 
   async function handleDeleteSession(id) {
-    if ($settings.confirmDelete && !confirm("确定要删除这个会话吗？")) return;
+    if ($settings.confirmDelete) {
+      sessionToDelete = id;
+      showDeleteConfirm = true;
+      return;
+    }
     await deleteSession(id);
     showSessionList = false;
+  }
+
+  async function confirmDeleteSession() {
+    if (sessionToDelete) {
+      await deleteSession(sessionToDelete);
+    }
+    showDeleteConfirm = false;
+    sessionToDelete = null;
+    showSessionList = false;
+  }
+
+  function cancelDeleteSession() {
+    showDeleteConfirm = false;
+    sessionToDelete = null;
   }
 
   async function handleNewSession() {
@@ -460,6 +481,16 @@
     onSend={handleSend}
     onStop={handleStop}
   />
+
+  {#if showDeleteConfirm}
+    <ConfirmDialog
+      message="确定要删除这个会话吗？此操作不可撤销。"
+      confirmText="确认删除"
+      danger={true}
+      onConfirm={confirmDeleteSession}
+      onCancel={cancelDeleteSession}
+    />
+  {/if}
 </div>
 
 <style>
