@@ -16,3 +16,4 @@ pnpm-debug.log*
 
 # Design docs (not needed in repo)
 docs/
+dist.pem
