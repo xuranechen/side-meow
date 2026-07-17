@@ -7,6 +7,7 @@
     "sidePanel",
     "storage",
     "activeTab",
+    "clipboardRead",
     "declarativeNetRequestWithHostAccess"
   ],
   "side_panel": {

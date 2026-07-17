@@ -1,6 +1,6 @@
 ﻿<script>
-  import { Plus, Server, ScanLine } from "lucide-svelte";
-  let { onAdd } = $props();
+  import { Plus, Server, ScanLine, ClipboardPaste } from "lucide-svelte";
+  let { onAdd, onQuickParse } = $props();
 </script>
 
 <div class="empty-state animate-fade-in">
@@ -13,9 +13,16 @@
   <span class="eyebrow">NODE DISCOVERY // 00</span>
   <h3>等待接口接入</h3>
   <p>添加首个大模型 API 节点，建立你的多模型控制中枢。</p>
-  <button class="btn-primary flex items-center gap-1.5" onclick={onAdd}>
-    <Plus size={13} /> 初始化节点
-  </button>
+  <div class="flex items-center gap-2">
+    <button class="btn-primary flex items-center gap-1.5" onclick={onAdd}>
+      <Plus size={13} /> 初始化节点
+    </button>
+    {#if onQuickParse}
+      <button class="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--color-border)] hover:border-[var(--color-border-hover)] text-[12px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-bright)] transition-colors" onclick={onQuickParse}>
+        <ClipboardPaste size={13} /> 从剪贴板解析
+      </button>
+    {/if}
+  </div>
 </div>
 
 <style>

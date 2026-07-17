@@ -9,7 +9,7 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import { CCSwitchMapper } from "../../lib/ccswitch/mapper.js";
   import { generateDeepLink, tryOpenCCSwitch, getCCSwitchDownloadUrl } from "../../lib/ccswitch/deeplink.js";
-  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap } from "lucide-svelte";
+  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap, Wand2 } from "lucide-svelte";
   import { getStorage, setStorage } from "../../lib/storage/chrome-storage.js";
   import AppSelector from "../components/AppSelector.svelte";
   import ModelSelect from "../components/ModelSelect.svelte";
@@ -81,6 +81,20 @@
 
   function handleAdd() {
     navigateTo("provider-form", { mode: "add" });
+  }
+
+  async function handleQuickParse() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text?.trim()) {
+        showToast("剪贴板为空", "warning");
+        return;
+      }
+      navigateTo("provider-form", { mode: "add", prefill: text.trim() });
+    } catch {
+      showToast("无法读取剪贴板，请手动粘贴", "warning");
+      navigateTo("provider-form", { mode: "add" });
+    }
   }
 
   function handleEdit(id) {
@@ -232,6 +246,14 @@
         <SettingsIcon size={15} />
       </button>
       <button
+        class="btn-primary home-add parse-btn flex items-center gap-1 ml-1"
+        onclick={handleQuickParse}
+        title="从剪贴板智能解析"
+      >
+        <Wand2 size={12} />
+        <span class="home-add-label">智能解析</span>
+      </button>
+      <button
         class="btn-primary home-add flex items-center gap-1.5 ml-1"
         onclick={handleAdd}
       >
@@ -269,7 +291,7 @@
 
   <main class="page-main home-main flex-1 overflow-y-auto">
     {#if sortedProviders.length === 0}
-      <EmptyState onAdd={handleAdd} />
+      <EmptyState onAdd={handleAdd} onQuickParse={handleQuickParse} />
     {:else}
       <div class="provider-grid">
         {#each sortedProviders as provider, index (provider.id)}
@@ -620,6 +642,18 @@
     font-size: 10px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .parse-btn {
+    background: rgba(var(--purple-rgb), 0.08) !important;
+    border: 1px dashed rgba(var(--purple-rgb), 0.42) !important;
+    color: #b394f4 !important;
+  }
+  .parse-btn:hover {
+    background: rgba(var(--purple-rgb), 0.16) !important;
+    border-color: rgba(var(--purple-rgb), 0.62) !important;
+    box-shadow: none !important;
+    transform: none !important;
   }
 
   @media (min-width: 460px) { .provider-grid { gap: 10px; } }

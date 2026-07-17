@@ -50,6 +50,27 @@
         fullUrl = provider.fullUrl || false;
         toolsJson = provider.tools ? JSON.stringify(provider.tools, null, 2) : "";
       }
+    } else if (params.prefill) {
+      const parsed = parseConfigString(params.prefill);
+      if (parsed) {
+        if (parsed.type) {
+          type = parsed.type;
+          baseUrl = API_TYPES[type].defaultBaseUrl;
+          loadDefaultModels();
+        }
+        if (parsed.apiKey) apiKey = parsed.apiKey;
+        if (parsed.baseUrl) baseUrl = parsed.baseUrl;
+        if (parsed.name) name = parsed.name;
+        else if (parsed.baseUrl) {
+          try {
+            const domain = new URL(parsed.baseUrl).hostname.replace(/^www\./, "").split(".").slice(-2, -1)[0];
+            if (domain) name = domain;
+          } catch {}
+        }
+        if (parsed.model) defaultModel = parsed.model;
+      }
+      baseUrl = baseUrl || API_TYPES[type].defaultBaseUrl;
+      loadDefaultModels();
     } else {
       baseUrl = API_TYPES[type].defaultBaseUrl;
       loadDefaultModels();
