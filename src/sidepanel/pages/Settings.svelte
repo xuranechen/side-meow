@@ -234,7 +234,7 @@
       <div class="card px-3.5 py-4">
         <div class="flex items-center gap-1.5 mb-1">
           <span class="text-[12px] font-semibold text-gradient">赛德喵</span>
-          <span class="version-tag">v1.0.0</span>
+          <span class="version-tag">v{chrome.runtime.getManifest().version}</span>
         </div>
         <p class="text-[11px] text-[var(--color-text-muted)]">浏览器侧边栏大模型接口管理工具</p>
       </div>

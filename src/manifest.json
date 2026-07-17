@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "赛德喵",
-  "version": "1.0.0",
+  "version": "0.5.1",
   "description": "侧边栏里的多模型 API 配置、测试与 CC Switch 导出助手。",
   "permissions": [
     "sidePanel",

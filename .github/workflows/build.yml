@@ -20,6 +20,15 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - name: Update version
+        run: |
+          BASE="0.5"
+          PATCH=${{ github.run_number }}
+          VERSION="${BASE}.${PATCH}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" src/manifest.json
+          echo "version=${VERSION}" >> $GITHUB_ENV
+
       - run: npm run build
 
       - name: Package CRX
@@ -52,8 +61,8 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: Release ${{ github.run_number }}
+          tag_name: v${{ env.version }}
+          name: v${{ env.version }}
           body: |
             ## 变更内容
             ${{ steps.changelog.outputs.log }}
