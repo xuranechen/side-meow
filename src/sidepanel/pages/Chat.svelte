@@ -77,7 +77,10 @@
   }
 
   async function handleSend(content) {
-    if (!$activeSession || !$activeProvider || streaming) return;
+    if (!$activeProvider || streaming) return;
+    if (!$activeSession) {
+      await createSession($activeProvider.id, $activeProvider.defaultModel, systemPrompt);
+    }
 
     await addMessage($activeSession.id, { role: "user", content });
     await addMessage($activeSession.id, {
@@ -310,7 +313,11 @@
   }
 
   async function handleModelChange(modelId) {
-    if (!$activeSession) return;
+    if (!$activeSession) {
+      if (!$activeProvider) return;
+      await createSession($activeProvider.id, modelId, systemPrompt);
+      return;
+    }
     sessions.update((s) => s.map((sess) => (sess.id === $activeSessionId ? { ...sess, modelId } : sess)));
   }
 
