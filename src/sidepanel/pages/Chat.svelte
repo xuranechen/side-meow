@@ -397,7 +397,7 @@
     <ModelSelector
       providers={$providers}
       activeProvider={$activeProvider}
-      activeModel={$activeSession?.modelId}
+      activeModel={$activeSession?.modelId || $activeProvider?.defaultModel}
       onProviderChange={handleProviderChange}
       onModelChange={handleModelChange}
     />
