@@ -15,6 +15,13 @@
   <img src="https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white" alt="Vite 6">
 </p>
 
+> **为什么叫赛德喵？**
+>
+> - **赛德** = Side 的音译，因为它住在浏览器的 **Side Panel**（侧边栏）里
+> - **喵** = 密**钥**（Key）的谐音，毕竟这是个管 API 密钥的工具
+>
+> 所以：**赛德喵 = Side + 钥 = 侧边栏的密钥管家**（顺便装猫卖萌）
+
 ---
 
 ## 功能

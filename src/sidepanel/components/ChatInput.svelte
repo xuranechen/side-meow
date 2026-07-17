@@ -40,7 +40,7 @@
       bind:value={content}
       onkeydown={handleKeydown}
       oninput={handleInput}
-      placeholder={disabled ? "请先选择接口..." : "输入消息，回车发送…"}
+      placeholder={streaming ? "正在生成中…" : disabled ? "请先选择接口..." : "输入消息，回车发送…"}
       {disabled}
       rows="1"
       class="composer-input resize-none min-h-[44px] max-h-[120px] w-full"
@@ -68,7 +68,7 @@
     {/if}
   </div>
   <div class="composer-meta">
-    <span><i></i>{disabled ? "未选择接口" : "接口已就绪"}</span>
+    <span><i></i>{streaming ? "正在生成…" : disabled ? "未选择接口" : "接口已就绪"}</span>
     <span>回车发送 · Shift + 回车换行</span>
   </div>
 </footer>

@@ -318,9 +318,18 @@ async function tryEndpoints(urlCandidates, headers, body, signal) {
 
 async function handleApiRequest(message, sender, sendResponse) {
   const { requestId, provider, messages, options = {} } = message;
-  const { stream = false } = options;
+  const { stream = false, timeout = 15000 } = options;
   const abortController = new AbortController();
   activeRequests.set(requestId, abortController);
+
+  const timeoutId = setTimeout(() => {
+    abortController.abort();
+    chrome.runtime.sendMessage({
+      type: "API_ERROR",
+      requestId,
+      error: { status: 0, message: `请求超时（${Math.round(timeout / 1000)}秒）` },
+    });
+  }, timeout);
 
   try {
     await syncUserAgentRule(provider.headers);
@@ -410,6 +419,7 @@ async function handleApiRequest(message, sender, sendResponse) {
       });
     }
   } finally {
+    clearTimeout(timeoutId);
     activeRequests.delete(requestId);
   }
 }

@@ -1,8 +1,18 @@
 <script>
   import { Brain, ChevronDown } from "lucide-svelte";
+  import { tick } from "svelte";
 
   let { thinking, streaming = false } = $props();
   let expanded = $state(true);
+  let contentEl = $state(null);
+
+  $effect(() => {
+    if (streaming && thinking && contentEl) {
+      tick().then(() => {
+        contentEl.scrollTop = contentEl.scrollHeight;
+      });
+    }
+  });
 </script>
 
 {#if thinking}
@@ -16,7 +26,7 @@
       <ChevronDown size={12} class="thinking-chevron {expanded ? 'expanded' : ''}" />
     </button>
     {#if expanded}
-      <div class="thinking-content">{thinking}</div>
+      <div class="thinking-content" bind:this={contentEl}>{thinking}</div>
     {/if}
   </div>
 {/if}
