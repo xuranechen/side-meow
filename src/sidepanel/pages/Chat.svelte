@@ -316,6 +316,10 @@
   async function confirmDeleteSession() {
     if (sessionToDelete) {
       await deleteSession(sessionToDelete);
+      // 同步 provider 到新激活的会话
+      if ($activeSession?.providerId) {
+        await setActiveProvider($activeSession.providerId);
+      }
     }
     showDeleteConfirm = false;
     sessionToDelete = null;
@@ -476,7 +480,7 @@
   </main>
 
   <ChatInput
-    disabled={streaming || !$activeProvider}
+    disabled={streaming || !$activeProvider || !$activeSession}
     {streaming}
     onSend={handleSend}
     onStop={handleStop}
