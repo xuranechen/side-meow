@@ -127,8 +127,6 @@
         model: $activeSession.modelId,
         thinking: true,
         thinkingBudget: 10000,
-        temperature: $settings.temperature,
-        maxTokens: $settings.maxTokens || undefined,
         timeout: ($settings.requestTimeout || 15) * 1000,
       },
     });

@@ -139,7 +139,7 @@ export async function healthCheckProvider(id, timeoutMs = 15000) {
             fullUrl: provider.fullUrl || false,
           },
           messages: [{ role: "user", content: "一根0.1mm绳子对折42次后有多长？只回答结果。" }],
-          options: { stream: false, maxTokens: 10 },
+          options: { stream: false, maxTokens: 10, timeout: timeoutMs },
         },
         (response) => {
           clearTimeout(timeout);

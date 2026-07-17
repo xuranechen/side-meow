@@ -11,8 +11,6 @@ const DEFAULT_SETTINGS = {
   showTokenCount: true,
   showTiming: true,
   confirmDelete: true,
-  temperature: 0.7,
-  maxTokens: 0,
   exportVersion: 1,
 };
 

@@ -445,7 +445,7 @@
         requestId: "test-" + Date.now(),
         provider,
         messages: testMessage,
-        options: { stream: false, maxTokens: 10 },
+        options: { stream: false, maxTokens: 10, timeout: ($settings.requestTimeout || 15) * 1000 },
       });
 
       const result = await new Promise((resolve, reject) => {

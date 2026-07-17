@@ -394,12 +394,14 @@ async function handleApiRequest(message, sender, sendResponse) {
     }
 
     if (stream) {
+      clearTimeout(timeoutId); // 流式响应收到后清除超时，后续由流本身控制
       if (responseFormat === "responses") {
         await handleResponsesStream(response, requestId);
       } else {
         await handleStreamResponse(response, requestId, provider.type);
       }
     } else {
+      clearTimeout(timeoutId);
       const data = await response.json();
       chrome.runtime.sendMessage({
         type: "API_RESPONSE",
