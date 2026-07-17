@@ -315,10 +315,9 @@
 
   async function confirmDeleteSession() {
     if (sessionToDelete) {
-      await deleteSession(sessionToDelete);
-      // 同步 provider 到新激活的会话
-      if ($activeSession?.providerId) {
-        await setActiveProvider($activeSession.providerId);
+      const newActive = await deleteSession(sessionToDelete);
+      if (newActive?.providerId) {
+        await setActiveProvider(newActive.providerId);
       }
     }
     showDeleteConfirm = false;

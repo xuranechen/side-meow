@@ -183,15 +183,20 @@ export async function deleteSession(sessionId) {
   const updated = current.filter((s) => s.id !== sessionId);
   await saveSessions(updated);
   
+  let newActive = null;
   const activeId = await getStorage("active_session_id");
   if (activeId === sessionId) {
     if (updated.length > 0) {
       await setActiveSession(updated[0].id);
+      newActive = updated[0];
     } else {
       await setStorage("active_session_id", null);
       activeSessionId.set(null);
     }
+  } else if (activeId) {
+    newActive = updated.find((s) => s.id === activeId) || null;
   }
+  return newActive;
 }
 
 export async function setActiveSession(id) {
