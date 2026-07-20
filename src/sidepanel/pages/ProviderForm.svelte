@@ -71,6 +71,9 @@
       }
       baseUrl = baseUrl || API_TYPES[type].defaultBaseUrl;
       loadDefaultModels();
+      if (baseUrl.trim() && apiKey.trim()) {
+        handleFetchModels();
+      }
     } else {
       baseUrl = API_TYPES[type].defaultBaseUrl;
       loadDefaultModels();
@@ -208,7 +211,7 @@
   const PARSE_PATTERNS = {
     apiKey: [
       /(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_API_KEY|GEMINI_API_KEY|API_KEY|APIKEY|api_key|apiKey)\s*[=:]\s*["']?([A-Za-z0-9_\-\.]+)["']?/i,
-      /(?:key|token|secret)\s*[=:]\s*["']?([A-Za-z0-9_\-\.]{8,})["']?/i,
+      /(?:key|token|secret)\s*[=:]\s*["']?([A-Za-z0-9_\-\.=]{8,})["']?/i,
       /\b(sk-[A-Za-z0-9_\-]{8,})\b/,
       /\b(gsk-[A-Za-z0-9_\-]{8,})\b/,
       /\b(xai-[A-Za-z0-9_\-]{8,})\b/,
@@ -218,7 +221,7 @@
     ],
     baseUrl: [
       /(?:ANTHROPIC_BASE_URL|OPENAI_BASE_URL|GEMINI_BASE_URL|BASE_URL|API_BASE|ENDPOINT|base_url|baseUrl|endpoint)\s*[=:]\s*["']?(https?:\/\/[^\s"',;\]]+)["']?/i,
-      /\b(https?:\/\/[a-zA-Z0-9\-\.]+(?::\d+)?\/[a-zA-Z0-9\._\-\/]+)\b/,
+      /\b(https?:\/\/[a-zA-Z0-9\-\.]+(?::\d+)?(?:\/[a-zA-Z0-9\._\-\/]*)?)\b/,
     ],
     model: [
       /(?:ANTHROPIC_MODEL|OPENAI_MODEL|GEMINI_MODEL|MODEL|model)\s*[=:]\s*["']?([a-zA-Z0-9\-\.]+)["']?/i,
