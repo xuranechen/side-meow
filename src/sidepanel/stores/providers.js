@@ -142,9 +142,14 @@ export async function healthCheckProvider(id, timeoutMs = 15000) {
           options: { stream: false, maxTokens: 10, timeout: timeoutMs },
         },
         (response) => {
-          clearTimeout(timeout);
           if (chrome.runtime.lastError) {
+            clearTimeout(timeout);
+            chrome.runtime.onMessage.removeListener(listener);
             reject(new Error(chrome.runtime.lastError.message));
+          } else if (!response?.accepted) {
+            clearTimeout(timeout);
+            chrome.runtime.onMessage.removeListener(listener);
+            reject(new Error("????? API ??"));
           }
         }
       );

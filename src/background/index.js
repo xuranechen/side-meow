@@ -2,7 +2,7 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 const DEFAULT_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-const COMMON_HEADERS = [
+const PROVIDER_ONLY_HEADERS = [
   { header: "sec-ch-ua", operation: "remove" },
   { header: "sec-ch-ua-mobile", operation: "remove" },
   { header: "sec-ch-ua-platform", operation: "remove" },
@@ -14,34 +14,40 @@ const COMMON_HEADERS = [
   { header: "Referer", operation: "remove" },
 ];
 
+const LEGACY_DYNAMIC_RULE_ID = 1;
+const UA_RULE_ID_BASE = 1000;
+const UA_RULE_ID_RANGE = 1000000000;
+const BACKGROUND_TAB_ID = -1;
+
 async function initHeaderRules() {
   try {
+    // Dynamic rules persist across browser restarts and extension updates. Remove the
+    // old global rule so existing installations stop modifying every page's XHRs.
     await chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: [1],
-      addRules: [{
-        id: 1,
-        priority: 1,
-        action: {
-          type: "modifyHeaders",
-          requestHeaders: [
-            { header: "User-Agent", operation: "set", value: DEFAULT_UA },
-            ...COMMON_HEADERS,
-          ],
-        },
-        condition: { urlFilter: "*", resourceTypes: ["xmlhttprequest"] },
-      }],
+      removeRuleIds: [LEGACY_DYNAMIC_RULE_ID],
     });
+
+    // Session rules survive service-worker restarts. Clear our reserved range and
+    // recreate rules lazily for the providers that are actually used this session.
+    const sessionRules = await chrome.declarativeNetRequest.getSessionRules();
+    const staleRuleIds = sessionRules
+      .map((rule) => rule.id)
+      .filter((id) => id >= UA_RULE_ID_BASE && id < UA_RULE_ID_BASE + UA_RULE_ID_RANGE);
+    if (staleRuleIds.length > 0) {
+      await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: staleRuleIds });
+    }
   } catch (e) {
-    console.error("Failed to init header rules:", e);
+    console.error("Failed to initialize provider header rules:", e);
   }
 }
 
-initHeaderRules();
+const headerRulesReady = initHeaderRules();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "API_REQUEST") {
-    handleApiRequest(message, sender, sendResponse);
-    return true;
+    void handleApiRequest(message);
+    sendResponse({ success: true, accepted: true });
+    return false;
   }
   
   if (message.type === "API_CANCEL") {
@@ -60,24 +66,62 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 const activeRequests = new Map();
 
-async function syncUserAgentRule(customHeaders = {}) {
-  const ua = customHeaders["User-Agent"] || customHeaders["user-agent"];
-  if (!ua) return;
+function sendRuntimeEvent(message) {
+  chrome.runtime.sendMessage(message, () => {
+    // Runtime events are best-effort broadcasts. Reading lastError suppresses the
+    // expected warning when the side panel has already closed or has no listener.
+    void chrome.runtime.lastError;
+  });
+}
+
+function getUserAgentRuleId(hostname) {
+  let hash = 0;
+  for (let i = 0; i < hostname.length; i++) {
+    hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
+  }
+  return UA_RULE_ID_BASE + ((hash >>> 0) % UA_RULE_ID_RANGE);
+}
+
+function getHeaderValue(headers, targetName) {
+  const entry = Object.entries(headers).find(([name]) => name.toLowerCase() === targetName);
+  return entry?.[1];
+}
+
+async function syncUserAgentRule(provider) {
+  await headerRulesReady;
+
+  const customHeaders = provider.headers || {};
+  const ua = getHeaderValue(customHeaders, "user-agent") || DEFAULT_UA;
+
+  let hostname;
+  try {
+    hostname = new URL(provider.baseUrl).hostname;
+  } catch (e) {
+    console.warn("Skipped UA rule for invalid provider URL:", provider.baseUrl);
+    return;
+  }
+
+  const ruleId = getUserAgentRuleId(hostname);
 
   try {
-    await chrome.declarativeNetRequest.updateDynamicRules({
-      removeRuleIds: [1],
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [ruleId],
       addRules: [{
-        id: 1,
+        id: ruleId,
         priority: 1,
         action: {
           type: "modifyHeaders",
           requestHeaders: [
             { header: "User-Agent", operation: "set", value: ua },
-            ...COMMON_HEADERS,
+            ...PROVIDER_ONLY_HEADERS,
           ],
         },
-        condition: { urlFilter: "*", resourceTypes: ["xmlhttprequest"] },
+        condition: {
+          requestDomains: [hostname],
+          // Background service-worker requests have no associated browser tab.
+          tabIds: [BACKGROUND_TAB_ID],
+          resourceTypes: ["xmlhttprequest"],
+        },
       }],
     });
   } catch (e) {
@@ -89,6 +133,7 @@ async function handleFetchModels(message) {
   const { provider } = message;
   
   try {
+    await syncUserAgentRule(provider);
     const models = await fetchModelList(provider);
     return { success: true, models };
   } catch (err) {
@@ -316,7 +361,7 @@ async function tryEndpoints(urlCandidates, headers, body, signal) {
   return { response, usedUrl };
 }
 
-async function handleApiRequest(message, sender, sendResponse) {
+async function handleApiRequest(message) {
   const { requestId, provider, messages, options = {} } = message;
   const { stream = false, timeout = 15000 } = options;
   const abortController = new AbortController();
@@ -324,7 +369,7 @@ async function handleApiRequest(message, sender, sendResponse) {
 
   const timeoutId = setTimeout(() => {
     abortController.abort();
-    chrome.runtime.sendMessage({
+    sendRuntimeEvent({
       type: "API_ERROR",
       requestId,
       error: { status: 0, message: `请求超时（${Math.round(timeout / 1000)}秒）` },
@@ -332,7 +377,7 @@ async function handleApiRequest(message, sender, sendResponse) {
   }, timeout);
 
   try {
-    await syncUserAgentRule(provider.headers);
+    await syncUserAgentRule(provider);
     let request = buildRequest(provider, messages, options);
     let { response, usedUrl } = await tryEndpoints(
       request.urlCandidates, request.headers, request.body, abortController.signal,
@@ -350,7 +395,7 @@ async function handleApiRequest(message, sender, sendResponse) {
     const { responseFormat = "chat" } = request;
 
     if (!response) {
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_ERROR",
         requestId,
         error: { status: 404, message: `所有端点均返回 404:\n${request.urlCandidates.join("\n")}` },
@@ -385,7 +430,7 @@ async function handleApiRequest(message, sender, sendResponse) {
           friendlyMsg = upstreamMsg || `HTTP ${response.status}`;
       }
 
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_ERROR",
         requestId,
         error: { status: response.status, message: friendlyMsg },
@@ -403,7 +448,7 @@ async function handleApiRequest(message, sender, sendResponse) {
     } else {
       clearTimeout(timeoutId);
       const data = await response.json();
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_RESPONSE",
         requestId,
         success: true,
@@ -412,9 +457,9 @@ async function handleApiRequest(message, sender, sendResponse) {
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      chrome.runtime.sendMessage({ type: "API_CANCELLED", requestId });
+      sendRuntimeEvent({ type: "API_CANCELLED", requestId });
     } else {
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_ERROR",
         requestId,
         error: { status: 0, message: err.message || "Network error" },
@@ -477,7 +522,7 @@ async function handleStreamResponse(response, requestId, apiType) {
 
   function flushThinking() {
     if (!currentThinking) return;
-    chrome.runtime.sendMessage({ type: "API_THINKING_DONE", requestId, text: currentThinking });
+    sendRuntimeEvent({ type: "API_THINKING_DONE", requestId, text: currentThinking });
     currentThinking = "";
   }
 
@@ -485,7 +530,7 @@ async function handleStreamResponse(response, requestId, apiType) {
     if (completed) return;
     completed = true;
     flushThinking();
-    chrome.runtime.sendMessage({
+    sendRuntimeEvent({
       type: "API_ERROR",
       requestId,
       error: { status: 0, message },
@@ -497,13 +542,13 @@ async function handleStreamResponse(response, requestId, apiType) {
     completed = true;
     flushThinking();
     if (toolCallsMap.size > 0) {
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_TOOL_CALLS",
         requestId,
         toolCalls: normalizeToolCalls(toolCallsMap),
       });
     }
-    chrome.runtime.sendMessage({
+    sendRuntimeEvent({
       type: "API_STREAM_DONE",
       requestId,
       usage,
@@ -563,7 +608,7 @@ async function handleStreamResponse(response, requestId, apiType) {
     const token = extractStreamToken(apiType, parsed);
     if (token?.thinking) {
       currentThinking += token.thinking;
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_THINKING_CHUNK",
         requestId,
         token: token.thinking,
@@ -571,7 +616,7 @@ async function handleStreamResponse(response, requestId, apiType) {
     }
     if (token?.content) {
       flushThinking();
-      chrome.runtime.sendMessage({
+      sendRuntimeEvent({
         type: "API_STREAM_CHUNK",
         requestId,
         token: token.content,
@@ -661,12 +706,12 @@ async function handleResponsesStream(response, requestId) {
 
   function flushThinking() {
     if (!currentThinking) return;
-    chrome.runtime.sendMessage({ type: "API_THINKING_DONE", requestId, text: currentThinking });
+    sendRuntimeEvent({ type: "API_THINKING_DONE", requestId, text: currentThinking });
     currentThinking = "";
   }
 
   function sendSearchCalls() {
-    chrome.runtime.sendMessage({
+    sendRuntimeEvent({
       type: "API_WEB_SEARCH_CALLS",
       requestId,
       webSearchCalls: [...webSearchCalls.values()],
@@ -677,7 +722,7 @@ async function handleResponsesStream(response, requestId) {
     if (completed) return;
     completed = true;
     flushThinking();
-    chrome.runtime.sendMessage({
+    sendRuntimeEvent({
       type: "API_ERROR",
       requestId,
       error: { status: 0, message },
@@ -694,7 +739,7 @@ async function handleResponsesStream(response, requestId) {
     if (responseData) {
       try { final = parseResponsesResponse(responseData); } catch {}
     }
-    chrome.runtime.sendMessage({
+    sendRuntimeEvent({
       type: "API_STREAM_DONE",
       requestId,
       usage: normalizeResponsesUsage(responseData?.usage),
@@ -723,7 +768,7 @@ async function handleResponsesStream(response, requestId) {
     switch (event.type) {
       case "response.reasoning_summary_text.delta":
         currentThinking += event.delta || "";
-        chrome.runtime.sendMessage({
+        sendRuntimeEvent({
           type: "API_THINKING_CHUNK",
           requestId,
           token: event.delta || "",
@@ -743,7 +788,7 @@ async function handleResponsesStream(response, requestId) {
       case "response.refusal.delta":
         flushThinking();
         if (event.delta) {
-          chrome.runtime.sendMessage({
+          sendRuntimeEvent({
             type: "API_STREAM_CHUNK",
             requestId,
             token: event.delta,

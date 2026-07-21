@@ -41,7 +41,7 @@
 | 重名检查      | 保存时检测同名配置，防止重复                                                    |
 | 完整 URL 模式 | 不自动拼接`/chat/completions`，适配特殊端点                                   |
 | 自定义请求头  | 支持请求头预设、自定义 User-Agent                                               |
-| 请求头伪装    | declarativeNetRequest 替换 UA、移除浏览器特征头                                 |
+| 请求头伪装    | 仅对插件后台访问的 Provider 域名替换 UA、移除浏览器特征头                  |
 
 ### 聊天测试
 
@@ -117,7 +117,7 @@ src/
     storage/                     # chrome-storage 封装（getStorage · setStorage · getStorageSize）
     constants.js · tokens.js · uuid.js · highlight.js
 rules/
-  ua-override.json               # User-Agent 伪装规则
+  ua-override.json               # 空的旧版静态规则占位（UA 规则由 Service Worker 按 Provider 生成）
 ```
 
 ## 社区
