@@ -1,3 +1,4 @@
+import { sanitizeApiKey } from "../lib/api/api-key.js";
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 const DEFAULT_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -142,7 +143,8 @@ async function handleFetchModels(message) {
 }
 
 async function fetchModelList(provider) {
-  const { type, baseUrl, apiKey, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
+  const { type, baseUrl, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
+  const apiKey = sanitizeApiKey(provider.apiKey);
   const customHeaders = {};
   for (const [key, value] of Object.entries(rawHeaders)) {
     if (key.toLowerCase() !== "user-agent") customHeaders[key] = value;
@@ -242,7 +244,7 @@ async function fetchOpenAIModels(baseUrl, apiKey, customHeaders, isFullUrl) {
           .filter((m) => m.id)
           .map((m) => ({
             id: m.id,
-            name: formatModelName(m.id),
+            name: m.id,
             ownedBy: m.owned_by,
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
@@ -273,7 +275,7 @@ async function fetchGeminiModels(baseUrl, apiKey, customHeaders) {
       const id = m.name.replace("models/", "");
       return {
         id,
-        name: m.displayName || formatModelName(id),
+        name: m.displayName || id,
         description: m.description,
         contextWindow: m.inputTokenLimit,
         maxTokens: m.outputTokenLimit,
@@ -290,16 +292,6 @@ async function fetchAnthropicModels() {
     { id: "claude-3-opus-20240229", name: "Claude 3 Opus" },
     { id: "claude-3-haiku-20240307", name: "Claude 3 Haiku" },
   ];
-}
-
-function formatModelName(id) {
-  return id
-    .split("/")
-    .pop()
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ")
-    .replace(/\b(Gpt|Api|Llm|Ai)\b/g, (match) => match.toUpperCase());
 }
 
 function buildChatUrlCandidates(baseUrl, isFullUrl = false) {
@@ -335,7 +327,15 @@ function buildResponsesUrlCandidates(baseUrl, isFullUrl = false) {
   return [...new Set(candidates)];
 }
 
-function usesResponsesApi(provider) {
+function effectiveEndpoint(provider, options = {}) {
+  const raw = options.endpoint || provider.endpoint || "auto";
+  return ["auto", "chat", "responses"].includes(raw) ? raw : "auto";
+}
+
+function usesResponsesApi(provider, options = {}) {
+  const endpoint = effectiveEndpoint(provider, options);
+  if (endpoint === "responses") return true;
+  if (endpoint === "chat") return false;
   return provider.type === "openai" &&
     Array.isArray(provider.tools) &&
     provider.tools.some((tool) => tool?.type === "web_search");
@@ -841,7 +841,8 @@ async function handleResponsesStream(response, requestId) {
 }
 
 function buildRequest(provider, messages, options) {
-  const { type, baseUrl, apiKey, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
+  const { type, baseUrl, headers: rawHeaders = {}, fullUrl: isFullUrl } = provider;
+  const apiKey = sanitizeApiKey(provider.apiKey);
   const { stream = false, temperature = 0.7 } = options;
   const hasExplicitMaxTokens = Number.isFinite(options.maxTokens) && options.maxTokens > 0;
   const maxTokens = hasExplicitMaxTokens ? options.maxTokens : 4096;
@@ -860,7 +861,7 @@ function buildRequest(provider, messages, options) {
         ...customHeaders,
       };
 
-      if (usesResponsesApi(provider)) {
+      if (usesResponsesApi(provider, options)) {
         const body = {
           model,
           input: messages.map((message) => ({ role: message.role, content: message.content })),

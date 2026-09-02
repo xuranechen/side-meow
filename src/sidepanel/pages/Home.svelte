@@ -67,10 +67,25 @@
       sortedProviders.map((p) => healthCheckProvider(p.id, timeout))
     );
     await setStorage("lastTestAllTime", Date.now());
-    const ok = results.filter((r) => r?.status === "ok").length;
-    const fail = results.length - ok;
+    let okProviders = 0;
+    let okModels = 0;
+    let totalModels = 0;
+    for (const r of results) {
+      if (r?.status === "ok") okProviders++;
+      if (r?.total != null) {
+        okModels += r.okCount || 0;
+        totalModels += r.total;
+      } else if (r?.status === "ok") {
+        okModels++;
+        totalModels++;
+      }
+    }
+    const fail = results.length - okProviders;
     testAllRunning = false;
-    showToast(`测试完成: ${ok} 成功, ${fail} 失败`, fail === 0 ? "success" : "warning");
+    showToast(
+      `测试完成：${okProviders}/${results.length} 接口可用，模型 ${okModels}/${totalModels}`,
+      fail === 0 ? "success" : "warning"
+    );
   }
 
   $effect(() => {
@@ -178,10 +193,13 @@
 
   async function handleTest(providerId) {
     const result = await healthCheckProvider(providerId, ($settings.requestTimeout || 15) * 1000);
-    if (result?.status === "ok") {
-      showToast(`连接成功 (${result.latency}ms)`, "success");
-    } else if (result?.status === "error") {
-      showToast(`连接失败: ${result.error}`, "error");
+    if (!result) return;
+    if (result.status === "ok") {
+      const ok = result.modelResults?.find((r) => r.status === "ok");
+      const suffix = result.okCount < result.total ? `，${result.total - result.okCount} 个不通` : "";
+      showToast(`连接成功：${result.okCount}/${result.total} 模型可用${ok ? ` · ${ok.model}` : ""} (${result.latency}ms${suffix})`, "success");
+    } else {
+      showToast(`连接失败 (${result.okCount}/${result.total})：${result.error}`, "error");
     }
   }
 
@@ -212,6 +230,24 @@
   let sortedProviders = $derived(
     [...$providers].sort((a, b) => a.sortIndex - b.sortIndex)
   );
+
+  let modelResultMap = $derived(
+    Object.fromEntries(
+      (selectedProvider?.healthCheck?.modelResults || []).map((r) => [r.model, r])
+    )
+  );
+
+  let sortedDetailModels = $derived(
+    (selectedProvider?.models || [])
+      .filter((m) => m?.id)
+      .sort((a, b) => statusRank(modelResultMap[a.id]) - statusRank(modelResultMap[b.id]))
+  );
+
+  function statusRank(r) {
+    if (r?.status === "ok") return 0;
+    if (r?.status === "error") return 2;
+    return 1;
+  }
 </script>
 
 <div class="h-full flex flex-col">
@@ -383,13 +419,36 @@
               <Copy size={12} />
             </button>
           {/if}
+          {#if selectedProvider.endpoint}
+            <button class="detail-row" onclick={() => copyDetail(selectedProvider.endpoint, "请求端点")}>
+              <span>请求端点</span>
+              <code>{selectedProvider.endpoint}</code>
+              <Copy size={12} />
+            </button>
+          {/if}
           {#if selectedProvider.models?.length}
             <div class="detail-group-title">模型列表</div>
-            {#each selectedProvider.models as model}
-              <button class="detail-row" onclick={() => copyDetail(model.id, "模型 ID")}>
-                <span>{model.name || "模型"}</span>
-                <code>{model.id}</code>
-                <Copy size={12} />
+            {#each sortedDetailModels as model}
+              {@const hc = modelResultMap[model.id]}
+              <button
+                class="detail-row model-row"
+                class:hc-ok={hc?.status === "ok"}
+                class:hc-error={hc?.status === "error"}
+                onclick={() => copyDetail(model.id, "模型 ID")}
+              >
+                <span class="model-row-main">
+                  <span class="model-id">{model.id}</span>
+                  <span class="model-row-grow"></span>
+                  {#if hc?.status === "ok"}
+                    <span class="model-hc hc-ok">{hc.latency}ms</span>
+                  {:else if hc?.status === "error"}
+                    <span class="model-hc hc-error">不通</span>
+                  {/if}
+                  <Copy size={12} />
+                </span>
+                {#if hc?.status === "error"}
+                  <span class="model-err">{hc.error || "连接失败"}</span>
+                {/if}
               </button>
             {/each}
           {/if}
@@ -602,6 +661,7 @@
     gap: 5px;
     max-height: 420px;
     overflow-y: auto;
+    overflow-x: auto;
     padding-top: 8px;
   }
   .detail-group-title {
@@ -642,6 +702,71 @@
     font-size: 10px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .model-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+  }
+  .model-row.hc-ok {
+    border-color: rgba(183, 234, 212, .34);
+    background: rgba(183, 234, 212, .06);
+  }
+  .model-row.hc-ok:hover {
+    border-color: rgba(183, 234, 212, .55);
+    background: rgba(183, 234, 212, .10);
+  }
+  .model-row.hc-error {
+    border-color: rgba(244, 119, 136, .34);
+    background: rgba(244, 119, 136, .06);
+  }
+  .model-row.hc-error:hover {
+    border-color: rgba(244, 119, 136, .55);
+    background: rgba(244, 119, 136, .10);
+  }
+  .model-row-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: visible;
+    white-space: normal;
+  }
+  .model-row .model-id {
+    flex: 0 0 auto;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+    line-height: 1.4;
+    color: var(--color-text-bright);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .model-row-grow { flex: 1 1 100%; min-width: 4px; }
+  .model-row-main :global(svg) { flex: 0 0 auto; }
+  .model-hc {
+    flex: 0 0 auto;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+  }
+  .model-hc.hc-ok { color: var(--color-success); }
+  .model-hc.hc-error { color: var(--color-error); }
+  .model-row .model-err {
+    display: block;
+    padding-left: 2px;
+    overflow: visible;
+    white-space: normal;
+    color: var(--color-error);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.35;
+    word-break: break-word;
   }
 
   .parse-btn {

@@ -6,6 +6,7 @@
   import { API_TYPES, DEFAULT_MODELS } from "../../lib/constants.js";
   import { generateId } from "../../lib/uuid.js";
   import { HEADER_PRESETS, getPresetList } from "../../lib/api/header-presets.js";
+  import { sanitizeApiKey } from "../../lib/api/api-key.js";
   import { ChevronLeft, Link, Plus, X, Loader2, Unlock, Wand2 } from "lucide-svelte";
 
   let mode = $state("add");
@@ -24,6 +25,7 @@
   let decodedHint = $state("");
   let fullUrl = $state(false);
   let toolsJson = $state("");
+  let endpoint = $state("auto");
 
   let isNew = $derived(mode === "add");
   let isEdit = $derived(mode === "edit");
@@ -41,7 +43,7 @@
         name = provider.name;
         type = provider.type;
         baseUrl = provider.baseUrl;
-        apiKey = provider.apiKey;
+        apiKey = sanitizeApiKey(provider.apiKey);
         customHeaders = provider.headers
           ? Object.entries(provider.headers).map(([key, value]) => ({ key, value }))
           : [];
@@ -49,6 +51,7 @@
         defaultModel = provider.defaultModel || "";
         fullUrl = provider.fullUrl || false;
         toolsJson = provider.tools ? JSON.stringify(provider.tools, null, 2) : "";
+        endpoint = provider.endpoint || "auto";
       }
     } else if (params.prefill) {
       const parsed = parseConfigString(params.prefill);
@@ -58,7 +61,7 @@
           baseUrl = API_TYPES[type].defaultBaseUrl;
           loadDefaultModels();
         }
-        if (parsed.apiKey) apiKey = parsed.apiKey;
+        if (parsed.apiKey) apiKey = sanitizeApiKey(parsed.apiKey);
         if (parsed.baseUrl) baseUrl = parsed.baseUrl;
         if (parsed.name) name = parsed.name;
         else if (parsed.baseUrl) {
@@ -95,7 +98,9 @@
   }
 
   async function handleFetchModels() {
-    if (!baseUrl.trim() || !apiKey.trim()) {
+    const cleanApiKey = sanitizeApiKey(apiKey);
+    apiKey = cleanApiKey;
+    if (!baseUrl.trim() || !cleanApiKey) {
       showToast("请先填写地址和密钥", "error");
       return;
     }
@@ -118,7 +123,7 @@
           provider: {
             type,
             baseUrl: baseUrl.trim(),
-            apiKey: apiKey.trim(),
+            apiKey: cleanApiKey,
             headers,
           },
         }, (response) => {
@@ -203,9 +208,36 @@
 
   function applyDecodedKey() {
     if (decodedHint) {
-      apiKey = decodedHint;
+      apiKey = sanitizeApiKey(decodedHint);
       decodedHint = "";
     }
+  }
+
+  const API_KEY_ASSIGNMENT = /(?:ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_API_KEY|GEMINI_API_KEY|API_KEY|APIKEY|api_key|apiKey|key|token|secret)\s*[=:]\s*(?:"([^"]+)"|'([^']+)'|([^\r\n,;&}\]]+))/i;
+  const API_KEY_PREFIX = /(?:sk-|gsk-|xai-|ark-|tp-|AIza|sess-)/;
+
+  function trimApiKeyCandidate(value) {
+    return value
+      .split(/\s+(?=https?:\/\/|[A-Za-z_][A-Za-z0-9_]*\s*[=:])/i)[0]
+      .split(/\s+(?=#|\/\/)/)[0];
+  }
+
+  function extractSanitizedApiKey(str, lines) {
+    const assignment = str.match(API_KEY_ASSIGNMENT);
+    if (assignment) {
+      const key = sanitizeApiKey(trimApiKeyCandidate(assignment[1] || assignment[2] || assignment[3] || ""));
+      if (key.length >= 8) return key;
+    }
+
+    for (const line of lines) {
+      const prefix = line.match(API_KEY_PREFIX);
+      if (!prefix) continue;
+      const candidate = line.slice(prefix.index).split(/["'`,;&}\]]/)[0];
+      const key = sanitizeApiKey(trimApiKeyCandidate(candidate));
+      if (key.length >= 8) return key;
+    }
+
+    return "";
   }
 
   const PARSE_PATTERNS = {
@@ -243,14 +275,19 @@
 
     const lines = str.split(/[\n\r]+/).map((l) => l.trim()).filter(Boolean);
 
-    for (const pattern of PARSE_PATTERNS.apiKey) {
-      const m = str.match(pattern);
-      if (m) {
-        let key = m[1];
-        const decoded = tryDecodeBase64(key);
-        if (decoded) key = decoded;
-        result.apiKey = key;
-        break;
+    const extractedApiKey = extractSanitizedApiKey(str, lines);
+    if (extractedApiKey) result.apiKey = extractedApiKey;
+
+    if (!result.apiKey) {
+      for (const pattern of PARSE_PATTERNS.apiKey) {
+        const m = str.match(pattern);
+        if (m) {
+          let key = sanitizeApiKey(m[1]);
+          const decoded = tryDecodeBase64(key);
+          if (decoded) key = sanitizeApiKey(decoded);
+          result.apiKey = key;
+          break;
+        }
       }
     }
 
@@ -259,7 +296,7 @@
         if (line.startsWith("http")) continue;
         const decoded = tryDecodeBase64(line);
         if (decoded && decoded.length >= 8 && !decoded.includes(" ")) {
-          result.apiKey = decoded;
+          result.apiKey = sanitizeApiKey(decoded);
           break;
         }
       }
@@ -342,7 +379,7 @@
       type = parsed.type;
       loadDefaultModels();
     }
-    if (parsed.apiKey) apiKey = parsed.apiKey;
+    if (parsed.apiKey) apiKey = sanitizeApiKey(parsed.apiKey);
     if (parsed.baseUrl) baseUrl = parsed.baseUrl;
     if (parsed.name) {
       name = name || parsed.name;
@@ -365,7 +402,9 @@
   }
 
   async function handleSubmit() {
-    if (!name.trim() || !baseUrl.trim() || !apiKey.trim()) {
+    const cleanApiKey = sanitizeApiKey(apiKey);
+    apiKey = cleanApiKey;
+    if (!name.trim() || !baseUrl.trim() || !cleanApiKey) {
       showToast("请填写必填字段", "error");
       return;
     }
@@ -403,16 +442,17 @@
       }
     }
 
-    const providerData = {
+const providerData = {
       name: name.trim(),
       type,
       baseUrl: baseUrl.trim(),
-      apiKey: apiKey.trim(),
+      apiKey: cleanApiKey,
       headers,
       models: validModels,
       defaultModel: defaultModel || validModels[0].id,
       fullUrl,
       tools,
+      endpoint,
     };
 
     try {
@@ -429,72 +469,155 @@
     }
   }
 
+  const TEST_SUCCESS_TYPES = new Set([
+    "API_RESPONSE",
+    "API_STREAM_STARTED",
+    "API_STREAM_CHUNK",
+    "API_THINKING_CHUNK",
+    "API_THINKING_DONE",
+    "API_TOOL_CALLS",
+    "API_WEB_SEARCH_CALLS",
+    "API_STREAM_DONE",
+  ]);
+
+  function runFormTest(provider, modelId, requestId, testMessage, requestTimeout) {
+    const startedAt = Date.now();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeout;
+
+      function cleanup() {
+        clearTimeout(timeout);
+        chrome.runtime.onMessage.removeListener(listener);
+      }
+
+      function cancelRequest() {
+        chrome.runtime.sendMessage({ type: "API_CANCEL", requestId }, () => {
+          void chrome.runtime.lastError;
+        });
+      }
+
+      function finish(error) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve(Date.now() - startedAt);
+      }
+
+      function listener(message) {
+        if (message.requestId !== requestId) return;
+        if (TEST_SUCCESS_TYPES.has(message.type)) {
+          const isComplete = message.type === "API_RESPONSE" || message.type === "API_STREAM_DONE";
+          finish(null, message);
+          if (!isComplete) cancelRequest();
+        } else if (message.type === "API_ERROR") {
+          finish(new Error(message.error?.message || "\u8fde\u63a5\u5931\u8d25"));
+        } else if (message.type === "API_CANCELLED") {
+          finish(new Error("\u6d4b\u8bd5\u8bf7\u6c42\u5df2\u53d6\u6d88"));
+        }
+      }
+
+      timeout = setTimeout(() => {
+        finish(new Error("\u8bf7\u6c42\u8d85\u65f6"));
+        cancelRequest();
+      }, requestTimeout);
+      chrome.runtime.onMessage.addListener(listener);
+
+      chrome.runtime.sendMessage({
+        type: "API_REQUEST",
+        requestId,
+        provider,
+        messages: testMessage,
+        options: {
+          stream: true,
+          model: modelId,
+          thinking: true,
+          thinkingBudget: 10000,
+          timeout: requestTimeout,
+        },
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          finish(new Error(chrome.runtime.lastError.message));
+        } else if (!response?.accepted) {
+          finish(new Error("\u540e\u53f0\u672a\u63a5\u53d7\u6d4b\u8bd5\u8bf7\u6c42"));
+        }
+      });
+    });
+  }
+
   async function handleTestConnection() {
-    if (!baseUrl.trim() || !apiKey.trim()) {
+    const cleanApiKey = sanitizeApiKey(apiKey);
+    apiKey = cleanApiKey;
+    if (!baseUrl.trim() || !cleanApiKey) {
       showToast("请填写地址和密钥", "error");
       return;
     }
 
+    const provider = {
+      type,
+      baseUrl: baseUrl.trim(),
+      apiKey: cleanApiKey,
+      defaultModel: defaultModel || models[0]?.id || "gpt-4o-mini",
+      headers: {},
+      fullUrl,
+      endpoint,
+    };
+
+    if (toolsJson.trim()) {
+      try {
+        provider.tools = JSON.parse(toolsJson);
+        if (!Array.isArray(provider.tools)) throw new Error("工具定义必须是 JSON 数组");
+      } catch (e) {
+        showToast("工具定义 JSON 格式错误: " + e.message, "error");
+        return;
+      }
+    }
+
+    for (const h of customHeaders) {
+      if (h.key.trim() && h.value.trim()) {
+        provider.headers[h.key.trim()] = h.value.trim();
+      }
+    }
+
+    const testMessage = [{ role: "user", content: "一根0.1mm绳子对折42次后有多长？只回答结果。" }];
+    const candidates = (models || []).map((m) => m.id).filter(Boolean);
+    if (candidates.length === 0) candidates.push(provider.defaultModel);
+    if (provider.defaultModel) {
+      const idx = candidates.indexOf(provider.defaultModel);
+      if (idx !== -1) {
+        const [first] = candidates.splice(idx, 1);
+        candidates.unshift(first);
+      }
+    }
+
+    const requestTimeout = ($settings.requestTimeout || 15) * 1000;
     testing = true;
+    const results = [];
+
     try {
-      const testMessage = [{ role: "user", content: "一根0.1mm绳子对折42次后有多长？只回答结果。" }];
-      const provider = {
-        type,
-        baseUrl: baseUrl.trim(),
-        apiKey: apiKey.trim(),
-        defaultModel: defaultModel || models[0]?.id || "gpt-4o-mini",
-        headers: {},
-        fullUrl,
-      };
-
-      if (toolsJson.trim()) {
+      for (let i = 0; i < candidates.length; i++) {
+        const modelId = candidates[i];
+        const requestId = "test-" + Date.now() + "-" + i;
         try {
-          provider.tools = JSON.parse(toolsJson);
-          if (!Array.isArray(provider.tools)) throw new Error("工具定义必须是 JSON 数组");
-        } catch (e) {
-          throw new Error("工具定义 JSON 格式错误: " + e.message);
+          const latency = await runFormTest(provider, modelId, requestId, testMessage, requestTimeout);
+          results.push({ model: modelId, status: "ok", latency });
+          break;
+        } catch (err) {
+          results.push({ model: modelId, status: "error", error: err.message });
         }
       }
 
-      for (const h of customHeaders) {
-        if (h.key.trim() && h.value.trim()) {
-          provider.headers[h.key.trim()] = h.value.trim();
-        }
+      const okResult = results.find((r) => r.status === "ok");
+      if (okResult) {
+        const tried = results.length;
+        const total = candidates.length;
+        const suffix = tried < total ? `（${tried + 1}/${total} 个模型测通）` : "";
+        showToast(`连接成功 (${okResult.latency}ms) · ${okResult.model}${suffix}`, "success");
+      } else {
+        const err = results[0]?.error || "连接失败";
+        showToast(`连接失败 (0/${candidates.length})：${err}`, "error");
       }
-
-      const startTime = Date.now();
-
-      chrome.runtime.sendMessage({
-        type: "API_REQUEST",
-        requestId: "test-" + Date.now(),
-        provider,
-        messages: testMessage,
-        options: { stream: false, maxTokens: 10, timeout: ($settings.requestTimeout || 15) * 1000 },
-      });
-
-      const result = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("请求超时")), ($settings.requestTimeout || 15) * 1000);
-
-        function listener(message) {
-          if (message.type === "API_RESPONSE" && message.requestId.startsWith("test-")) {
-            clearTimeout(timeout);
-            chrome.runtime.onMessage.removeListener(listener);
-            resolve(message);
-          }
-          if (message.type === "API_ERROR" && message.requestId.startsWith("test-")) {
-            clearTimeout(timeout);
-            chrome.runtime.onMessage.removeListener(listener);
-            reject(new Error(message.error.message));
-          }
-        }
-
-        chrome.runtime.onMessage.addListener(listener);
-      });
-
-      const elapsed = Date.now() - startTime;
-      showToast(`连接成功 (${elapsed}ms)`, "success");
-    } catch (err) {
-      showToast(err.message || "连接失败", "error");
     } finally {
       testing = false;
     }
@@ -632,6 +755,21 @@
         </button>
         <span class="text-[10px] text-[var(--color-text-muted)]">完整 URL（不自动拼接 /chat/completions）</span>
       </label>
+
+      {#if type === "openai"}
+        <div class="flex items-center gap-2 mt-2">
+          <select
+            bind:value={endpoint}
+            aria-label="请求端点"
+            style="font-size: 11px; padding: 5px 8px; background: var(--color-bg-tertiary); border: 1px solid var(--color-border); color: var(--color-text-bright); border-radius: var(--radius-sm);"
+          >
+            <option value="auto">自动（web_search 工具走 /responses）</option>
+            <option value="chat">/v1/chat/completions</option>
+            <option value="responses">/v1/responses</option>
+          </select>
+          <span class="text-[10px] text-[var(--color-text-muted)]">请求端点（"其他端点"请配合上方完整 URL 使用）</span>
+        </div>
+      {/if}
     </div>
 
     <div>
@@ -641,10 +779,12 @@
       <input
         id="apiKey"
         type="password"
-        bind:value={apiKey}
+        value={apiKey}
+        oninput={(event) => (apiKey = sanitizeApiKey(event.currentTarget.value))}
         placeholder="sk-..."
         style="font-family: var(--font-mono);"
       />
+      <div class="text-[10px] text-[var(--color-text-muted)] mt-1.5">自动过滤空格、中文及其他非 ASCII 干扰字符</div>
       {#if decodedHint}
         <div class="flex items-center gap-2 mt-1.5">
           <button
@@ -732,7 +872,7 @@
         class="resize-none w-full"
         style="font-family: var(--font-mono); font-size: 11px; padding: 8px 10px; background: rgba(var(--sunken-rgb), .42); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-bright);"
       ></textarea>
-      <p class="text-[9px] text-[var(--color-text-muted)] mt-1"><code>type=web_search</code> 会自动使用 Responses API，并分开展示联网搜索、思考过程和最终回复</p>
+      <p class="text-[9px] text-[var(--color-text-muted)] mt-1"><code>type=web_search</code> 时端点选「自动」会走 Responses API；手动选 <code>/v1/responses</code> 同样走 Responses API</p>
     </div>
 
     <div>
@@ -777,13 +917,6 @@
             placeholder="模型ID"
             aria-label="模型ID"
             style="font-family: var(--font-mono); font-size: 12px; padding: 6px 10px;"
-          />
-          <input
-            type="text"
-            bind:value={model.name}
-            placeholder="显示名称"
-            aria-label="显示名称"
-            style="font-size: 12px; padding: 6px 10px;"
           />
           <button
             class="p-1.5 text-[var(--color-text-muted)] hover:text-[var(--color-error)] transition-colors rounded-sm hover:bg-[var(--color-bg-tertiary)]"

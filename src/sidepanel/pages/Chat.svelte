@@ -10,6 +10,7 @@
     setActiveSession,
     persistSessionsSoon,
     persistSessionsNow,
+    updateSessionMetadata,
   } from "../stores/sessions.js";
   import { providers, activeProvider, setActiveProvider } from "../stores/providers.js";
   import { pageParams, goBack, showToast } from "../stores/ui.js";
@@ -28,6 +29,8 @@
   let showSystemPrompt = $state(false);
   let showDeleteConfirm = $state(false);
   let sessionToDelete = $state(null);
+
+  let currentEndpoint = $derived($activeSession?.endpoint || $activeProvider?.endpoint || "auto");
 
   let streaming = $derived(activeStreams.has($activeSessionId));
   let currentAbort = $derived(activeStreams.get($activeSessionId)?.requestId || null);
@@ -125,11 +128,17 @@
       options: {
         stream: $settings.streamByDefault,
         model: $activeSession.modelId,
+        endpoint: currentEndpoint,
         thinking: true,
         thinkingBudget: 10000,
         timeout: ($settings.requestTimeout || 15) * 1000,
       },
     });
+  }
+
+  async function handleEndpointChange(value) {
+    if (!$activeSessionId) return;
+    await updateSessionMetadata($activeSessionId, { endpoint: value });
   }
 
   function findStreamByRequestId(requestId) {
@@ -409,6 +418,19 @@
     />
 
     <div class="flex items-center gap-1">
+      {#if $activeProvider?.type === "openai"}
+        <select
+          class="endpoint-select"
+          value={currentEndpoint}
+          onchange={(e) => handleEndpointChange(e.target.value)}
+          title="请求端点"
+        >
+          <option value="auto">自动</option>
+          <option value="chat">/v1/chat/completions</option>
+          <option value="responses">/v1/responses</option>
+        </select>
+      {/if}
+
       <button
         class="p-1.5 rounded-lg hover:bg-[var(--color-bg-tertiary)] transition-colors {showSystemPrompt ? 'text-[var(--color-primary)]' : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-bright)]'}"
         onclick={() => (showSystemPrompt = !showSystemPrompt)}
@@ -505,5 +527,19 @@
 <style>
   .chat-main :global(.message-row + .message-row) {
     margin-top: 16px;
+  }
+
+  .endpoint-select {
+    max-width: 128px;
+    padding: 4px 6px;
+    font-size: 10px;
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-secondary);
+  }
+  .endpoint-select:hover {
+    border-color: var(--color-border-hover);
+    color: var(--color-text-bright);
   }
 </style>

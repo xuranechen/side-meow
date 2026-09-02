@@ -1,10 +1,12 @@
+import { sanitizeApiKey } from "../api/api-key.js";
+
 export class CCSwitchMapper {
   static mapProvider(provider) {
     return {
       resource: "provider",
       name: provider.name,
       endpoint: provider.baseUrl,
-      apiKey: provider.apiKey,
+      apiKey: sanitizeApiKey(provider.apiKey),
       model: provider.defaultModel,
       models: provider.models || [],
     };

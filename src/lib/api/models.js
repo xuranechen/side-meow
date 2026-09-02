@@ -1,5 +1,8 @@
+import { sanitizeApiKey } from "./api-key.js";
+
 export async function fetchModelList(provider) {
-  const { type, baseUrl, apiKey, headers: customHeaders = {} } = provider;
+  const { type, baseUrl, headers: customHeaders = {} } = provider;
+  const apiKey = sanitizeApiKey(provider.apiKey);
   
   switch (type) {
     case "openai":

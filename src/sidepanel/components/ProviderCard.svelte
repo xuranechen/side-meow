@@ -74,12 +74,18 @@
       {:else if provider.healthCheck.status === "ok"}
         <span class="health-dot health-dot-ok"></span>
         <span class="health-text">{provider.healthCheck.latency}ms</span>
+        {#if provider.healthCheck.okCount != null}
+          <span class="health-tag">{provider.healthCheck.okCount}/{provider.healthCheck.total} 可用</span>
+        {/if}
         {#if provider.healthCheck.latency >= 2000}
           <span class="health-tag health-tag-slow">慢</span>
         {/if}
       {:else}
         <span class="health-dot health-dot-error"></span>
         <span class="health-text health-error-text">{provider.healthCheck.error || "连接失败"}</span>
+        {#if provider.healthCheck.okCount != null}
+          <span class="health-tag health-tag-fail">{provider.healthCheck.okCount}/{provider.healthCheck.total} 可用</span>
+        {/if}
       {/if}
       <span class="health-time">{timeAgo(provider.healthCheck.lastCheck)}</span>
     </div>
@@ -211,6 +217,7 @@
   .health-time { margin-left: auto; font-family: var(--font-mono); font-size: 9px; color: var(--color-text-muted); opacity: .6; }
   .health-tag { padding: 0 4px; border-radius: 3px; font-size: 9px; font-weight: 600; }
   .health-tag-slow { background: rgba(241,217,115,.15); color: #f1d973; border: 1px solid rgba(241,217,115,.30); }
+  .health-tag-fail { background: rgba(244,119,136,.15); color: #f47788; border: 1px solid rgba(244,119,136,.30); }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
 
   .drag-handle { z-index: 2; flex: 0 0 auto; opacity: .28; color: var(--color-text-muted); transition: opacity .18s ease, color .18s ease; }
