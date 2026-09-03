@@ -16,6 +16,7 @@ export class CCSwitchMapper {
     { value: "claude", label: "Claude Code" },
     { value: "claude_desktop", label: "Claude Desktop" },
     { value: "codex", label: "Codex" },
+    { value: "grokbuild", label: "Grok Build" },
     { value: "gemini", label: "Gemini CLI" },
     { value: "opencode", label: "OpenCode" },
     { value: "openclaw", label: "OpenClaw" },

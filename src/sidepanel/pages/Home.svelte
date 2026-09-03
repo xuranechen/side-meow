@@ -1,5 +1,5 @@
 <script>
-  import { providers, setActiveProvider, deleteProvider, reorderProviders, healthCheckProvider } from "../stores/providers.js";
+  import { providers, setActiveProvider, deleteProvider, reorderProviders, healthCheckProvider, healthCheckModel, healthCheckAll, refreshAllProvidersModels } from "../stores/providers.js";
   import { navigateTo, showToast } from "../stores/ui.js";
   import { settings } from "../stores/settings.js";
   import { sessions, createSession } from "../stores/sessions.js";
@@ -9,7 +9,7 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import { CCSwitchMapper } from "../../lib/ccswitch/mapper.js";
   import { generateDeepLink, tryOpenCCSwitch, getCCSwitchDownloadUrl } from "../../lib/ccswitch/deeplink.js";
-  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap, Wand2 } from "lucide-svelte";
+  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap, Wand2, RefreshCw, Loader2 } from "lucide-svelte";
   import { getStorage, setStorage } from "../../lib/storage/chrome-storage.js";
   import AppSelector from "../components/AppSelector.svelte";
   import ModelSelect from "../components/ModelSelect.svelte";
@@ -26,6 +26,10 @@
   let testAllCooldown = $state(0);
   let testAllRunning = $state(false);
   let cooldownTimer = $state(null);
+  let testingModel = $state(null);
+  let refreshingModels = $state(false);
+  let fullTesting = $state(false);
+  let showFullTestConfirm = $state(false);
 
   const TEST_ALL_COOLDOWN = 5 * 60 * 1000;
 
@@ -83,7 +87,7 @@
     const fail = results.length - okProviders;
     testAllRunning = false;
     showToast(
-      `测试完成：${okProviders}/${results.length} 接口可用，模型 ${okModels}/${totalModels}`,
+      `全部接口（默认模型）测试完成：${okProviders}/${results.length} 可用，模型 ${okModels}/${totalModels}`,
       fail === 0 ? "success" : "warning"
     );
   }
@@ -195,11 +199,74 @@
     const result = await healthCheckProvider(providerId, ($settings.requestTimeout || 15) * 1000);
     if (!result) return;
     if (result.status === "ok") {
-      const ok = result.modelResults?.find((r) => r.status === "ok");
-      const suffix = result.okCount < result.total ? `，${result.total - result.okCount} 个不通` : "";
-      showToast(`连接成功：${result.okCount}/${result.total} 模型可用${ok ? ` · ${ok.model}` : ""} (${result.latency}ms${suffix})`, "success");
+      showToast(`连接成功 (${result.latency}ms) · ${result.model}`, "success");
+    } else if (result.status === "limited") {
+      showToast("已触发限速：每分钟每渠道最多测试 2 个不同模型，请稍后再试", "warning");
     } else {
-      showToast(`连接失败 (${result.okCount}/${result.total})：${result.error}`, "error");
+      showToast(`连接失败：${result.error || "连接失败"}`, "error");
+    }
+  }
+
+  async function handleModelTest(modelId) {
+    const pid = selectedProvider?.id;
+    if (!pid || testingModel || fullTesting) return;
+    testingModel = modelId;
+    try {
+      const timeout = ($settings.requestTimeout || 15) * 1000;
+      const result = await healthCheckModel(pid, modelId, timeout);
+      selectedProvider = $providers.find((p) => p.id === pid) || selectedProvider;
+      if (result?.status === "ok") {
+        showToast(`模型 ${result.model} 连接成功 (${result.latency}ms)`, "success");
+      } else {
+        showToast(`模型 ${result?.model || modelId} 连接失败：${result?.error || "连接失败"}`, "error");
+      }
+    } finally {
+      testingModel = null;
+    }
+  }
+
+  async function runFullTest() {
+    const pid = selectedProvider?.id;
+    if (!pid || fullTesting) return;
+    showFullTestConfirm = false;
+    fullTesting = true;
+    try {
+      const timeout = ($settings.requestTimeout || 15) * 1000;
+      const entries = await healthCheckAll(pid, timeout, (m) => { testingModel = m; });
+      selectedProvider = $providers.find((p) => p.id === pid) || selectedProvider;
+      const ok = entries.filter((r) => r?.status === "ok").length;
+      const fail = entries.filter((r) => r?.status === "error").length;
+      if (entries.length === 0) {
+        showToast("没有可检测的模型", "warning");
+      } else if (ok === entries.length) {
+        showToast(`全测完成：${ok}/${entries.length} 模型可用`, "success");
+      } else if (ok > 0) {
+        showToast(`全测完成：${ok}/${entries.length} 可用，${fail} 失败`, "warning");
+      } else {
+        showToast(`全测完成：${entries.length} 个模型均检测失败`, "error");
+      }
+    } finally {
+      fullTesting = false;
+      testingModel = null;
+    }
+  }
+
+  async function handleRefreshAllModels() {
+    if (refreshingModels) return;
+    refreshingModels = true;
+    try {
+      const timeout = ($settings.requestTimeout || 15) * 1000;
+      const results = await refreshAllProvidersModels(timeout);
+      const ok = results.filter((r) => r?.status === "ok");
+      const fail = results.filter((r) => r?.status === "error");
+      const failMsg = fail.map((f) => `${f.name}: ${f.error}`).join("；");
+      if (fail.length === 0) {
+        showToast(`模型已更新：${ok.length} 个渠道，共 ${ok.reduce((s, r) => s + (r.count || 0), 0)} 个模型`, "success");
+      } else {
+        showToast(`更新 ${ok.length}/${results.length} 成功${failMsg ? `；${failMsg}` : ""}`, "warning");
+      }
+    } finally {
+      refreshingModels = false;
     }
   }
 
@@ -300,29 +367,47 @@
   </header>
 
   <div class="storage-bar">
-    <span>{$providers.length} 个接口</span>
-    <span class="storage-dot"></span>
-    <span>{$sessions.length} 个会话</span>
-    <span class="storage-dot"></span>
-    <span>{formatBytes(storageBytes)} / 10 MB</span>
-    {#if sortedProviders.length > 1}
+    <div class="storage-info">
+      <span>{$providers.length} 个接口</span>
       <span class="storage-dot"></span>
-      <button
-        class="storage-test-all {testAllCooldown > 0 || testAllRunning ? 'storage-test-disabled' : ''}"
-        onclick={handleTestAll}
-        disabled={testAllCooldown > 0 || testAllRunning}
-        title={testAllCooldown > 0 ? `冷却中 ${formatCooldown(testAllCooldown)}` : "一键测试全部接口"}
-      >
-        <Zap size={10} />
-        {#if testAllRunning}
-          <span>测试中…</span>
-        {:else if testAllCooldown > 0}
-          <span>{formatCooldown(testAllCooldown)}</span>
-        {:else}
-          <span>全部测试</span>
-        {/if}
-      </button>
-    {/if}
+      <span>{$sessions.length} 个会话</span>
+      <span class="storage-dot"></span>
+      <span>{formatBytes(storageBytes)} / 10 MB</span>
+    </div>
+    <div class="storage-actions">
+      {#if sortedProviders.length > 0}
+        <button
+          class="storage-action {refreshingModels ? 'storage-test-disabled' : ''}"
+          onclick={handleRefreshAllModels}
+          disabled={refreshingModels}
+          title="一键更新所有渠道的上游模型列表"
+        >
+          <RefreshCw size={11} />
+          {#if refreshingModels}
+            <span>更新中…</span>
+          {:else}
+            <span>更新模型</span>
+          {/if}
+        </button>
+      {/if}
+      {#if sortedProviders.length > 1}
+        <button
+          class="storage-action {testAllCooldown > 0 || testAllRunning ? 'storage-test-disabled' : ''}"
+          onclick={handleTestAll}
+          disabled={testAllCooldown > 0 || testAllRunning}
+          title={testAllCooldown > 0 ? `冷却中 ${formatCooldown(testAllCooldown)}` : "一键测试全部接口"}
+        >
+          <Zap size={11} />
+          {#if testAllRunning}
+            <span>测试中…</span>
+          {:else if testAllCooldown > 0}
+            <span>{formatCooldown(testAllCooldown)}</span>
+          {:else}
+            <span>全部测试</span>
+          {/if}
+        </button>
+      {/if}
+    </div>
   </div>
 
   <main class="page-main home-main flex-1 overflow-y-auto">
@@ -366,6 +451,16 @@
     />
   {/if}
 
+  {#if showFullTestConfirm}
+    <ConfirmDialog
+      message="一键全测会连续请求当前渠道的多个模型，频繁或高并发检测可能触发上游风控封禁，请根据实际使用情况谨慎操作。确定继续？"
+      confirmText="开始全测"
+      danger={true}
+      onConfirm={runFullTest}
+      onCancel={() => (showFullTestConfirm = false)}
+    />
+  {/if}
+
 
 
   {#if selectedProvider}
@@ -384,6 +479,19 @@
             <h2>{selectedProvider.name}</h2>
           </div>
           <div class="detail-head-actions">
+            <button
+              class="detail-export detail-test-all"
+              onclick={() => (showFullTestConfirm = true)}
+              disabled={fullTesting || testingModel !== null}
+              title="一键检测全部模型（注意风控风险）"
+            >
+              {#if fullTesting}
+                <span>全测中…</span>
+              {:else}
+                <Zap size={12} />
+                <span>一键全测</span>
+              {/if}
+            </button>
             <button class="detail-export" onclick={openCCSwitchPreview} aria-label="快速导出到 CC Switch" title="快速导出到 CC Switch">
               <Download size={12} />
               <span>导出到 CC Switch</span>
@@ -430,11 +538,15 @@
             <div class="detail-group-title">模型列表</div>
             {#each sortedDetailModels as model}
               {@const hc = modelResultMap[model.id]}
-              <button
+              <div
                 class="detail-row model-row"
                 class:hc-ok={hc?.status === "ok"}
                 class:hc-error={hc?.status === "error"}
                 onclick={() => copyDetail(model.id, "模型 ID")}
+                role="button"
+                tabindex="0"
+                onkeydown={(e) => e.key === "Enter" && copyDetail(model.id, "模型 ID")}
+                title="点击复制模型 ID"
               >
                 <span class="model-row-main">
                   <span class="model-id">{model.id}</span>
@@ -444,12 +556,32 @@
                   {:else if hc?.status === "error"}
                     <span class="model-hc hc-error">不通</span>
                   {/if}
-                  <Copy size={12} />
+                  <button
+                    class="model-copy-icon"
+                    onclick={(e) => { e.stopPropagation(); copyDetail(model.id, "模型 ID"); }}
+                    title="复制模型 ID"
+                    aria-label="复制模型 ID"
+                  >
+                    <Copy size={12} />
+                  </button>
+                  <button
+                    class="model-test"
+                    onclick={(e) => { e.stopPropagation(); handleModelTest(model.id); }}
+                    disabled={testingModel !== null || fullTesting}
+                    title="检测此模型"
+                    aria-label="检测此模型"
+                  >
+                    {#if testingModel === model.id}
+                      <Loader2 size={11} class="animate-spin" />
+                    {:else}
+                      <RefreshCw size={11} />
+                    {/if}
+                  </button>
                 </span>
                 {#if hc?.status === "error"}
                   <span class="model-err">{hc.error || "连接失败"}</span>
                 {/if}
-              </button>
+              </div>
             {/each}
           {/if}
         </div>
@@ -516,41 +648,72 @@
 
 
 <style>
-  .home-header { min-height: 52px; }
+  .home-header { min-height: 58px; }
   .storage-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 5px 12px;
+    border-bottom: 1px solid var(--color-border);
+    background: rgba(var(--sunken-rgb), .30);
+  }
+  .storage-info {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 14px;
     font-family: var(--font-mono);
-    font-size: 9px;
-    color: var(--color-text-muted);
-    border-bottom: 1px solid var(--color-border);
-    background: rgba(var(--sunken-rgb), .24);
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
     letter-spacing: .03em;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .storage-info span:not(.storage-dot) {
+    flex: 1 1 0;
+    text-align: center;
+  }
+  .storage-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .storage-actions .storage-action {
+    flex: 1 1 0;
+    justify-content: center;
   }
   .storage-dot {
-    width: 3px;
-    height: 3px;
+    width: 4px;
+    height: 4px;
     border-radius: 50%;
     background: var(--color-text-muted);
-    opacity: .4;
+    opacity: .5;
   }
-  .storage-test-all {
+  .storage-action {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--color-primary);
+    gap: 4px;
+    min-height: 24px;
+    padding: 3px 9px;
+    border: 1px solid rgba(var(--accent-rgb), .45);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--accent-rgb), .08);
+    color: var(--color-primary-hover);
     font-family: var(--font-mono);
-    font-size: 9px;
+    font-size: 10px;
+    font-weight: 600;
     letter-spacing: .03em;
+    white-space: nowrap;
     cursor: pointer;
-    transition: opacity .15s;
+    transition: border-color .15s var(--ease-out), background .15s var(--ease-out), box-shadow .15s var(--ease-out), transform .15s var(--ease-out);
   }
-  .storage-test-all:hover { opacity: .8; }
+  .storage-action:hover:not(:disabled) {
+    border-color: rgba(var(--accent-rgb), .68);
+    background: rgba(var(--accent-rgb), .14);
+    box-shadow: var(--glow-primary);
+    transform: translateY(-1px);
+  }
+  .storage-action:disabled { opacity: .5; cursor: default; }
   .storage-test-disabled {
     opacity: .5;
     cursor: not-allowed;
@@ -640,6 +803,11 @@
     background: rgba(var(--accent-rgb), .15);
     box-shadow: var(--glow-primary);
   }
+  .detail-export:disabled {
+    opacity: .5;
+    cursor: default;
+    box-shadow: none;
+  }
   .detail-close {
     display: inline-flex;
     width: 28px;
@@ -708,6 +876,7 @@
     flex-direction: column;
     align-items: stretch;
     gap: 3px;
+    cursor: pointer;
   }
   .model-row.hc-ok {
     border-color: rgba(183, 234, 212, .34);
@@ -742,6 +911,47 @@
     color: var(--color-text-bright);
     font-family: var(--font-mono);
     font-size: 10px;
+  }
+  .model-test {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--sunken-rgb), .36);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: color .15s var(--ease-out), border-color .15s var(--ease-out), background .15s var(--ease-out);
+  }
+  .model-test:hover:not(:disabled) {
+    color: var(--color-primary-hover);
+    border-color: var(--color-border-hover);
+    background: rgba(var(--accent-rgb), .08);
+  }
+  .model-test:disabled { opacity: .5; cursor: default; }
+  .model-copy-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--sunken-rgb), .36);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: color .15s var(--ease-out), border-color .15s var(--ease-out), background .15s var(--ease-out);
+  }
+  .model-copy-icon:hover {
+    color: var(--color-primary-hover);
+    border-color: var(--color-border-hover);
+    background: rgba(var(--accent-rgb), .08);
   }
   .model-row-grow { flex: 1 1 100%; min-width: 4px; }
   .model-row-main :global(svg) { flex: 0 0 auto; }

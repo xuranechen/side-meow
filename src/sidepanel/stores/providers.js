@@ -129,21 +129,67 @@ export async function healthCheckProvider(id, timeoutMs = 15000) {
   const provider = current.find((p) => p.id === id);
   if (!provider) return;
 
+  const modelId = provider.defaultModel || provider.models?.[0]?.id || "gpt-4o-mini";
   await updateProvider(id, {
-    healthCheck: { status: "testing", lastCheck: Date.now() },
+    healthCheck: { ...(provider.healthCheck || {}), status: "testing", lastCheck: Date.now() },
   });
+  const entry = await processHealthModel(provider, modelId, timeoutMs);
+  if (entry) {
+    await mergeHealthResult(provider, entry);
+  }
+  return entry;
+}
 
+export async function healthCheckModel(providerId, modelId, timeoutMs = 15000) {
+  const current = [];
+  providers.subscribe((p) => current.push(...p))();
+  const provider = current.find((p) => p.id === providerId);
+  if (!provider) return;
+
+  await updateProvider(providerId, {
+    healthCheck: { ...(provider.healthCheck || {}), status: "testing", lastCheck: Date.now() },
+  });
+  const entry = await processHealthModel(provider, modelId, timeoutMs);
+  if (entry) {
+    await mergeHealthResult(provider, entry);
+  }
+  return entry;
+}
+
+export async function healthCheckAll(providerId, timeoutMs = 15000, onModelTest = null) {
+  const current = [];
+  providers.subscribe((p) => current.push(...p))();
+  const provider = current.find((p) => p.id === providerId);
+  if (!provider) return [];
+
+  const defaultModel = provider.defaultModel || provider.models?.[0]?.id || "gpt-4o-mini";
   const modelIds = (provider.models || []).map((m) => m.id).filter(Boolean);
-  const candidates = modelIds.length > 0 ? modelIds : [provider.defaultModel || "gpt-4o-mini"];
-  if (provider.defaultModel) {
-    const idx = candidates.indexOf(provider.defaultModel);
+  const candidates = modelIds.length > 0 ? modelIds : [defaultModel];
+  if (defaultModel) {
+    const idx = candidates.indexOf(defaultModel);
     if (idx !== -1) {
       const [first] = candidates.splice(idx, 1);
       candidates.unshift(first);
     }
   }
 
-  const baseProvider = {
+  await updateProvider(providerId, {
+    healthCheck: { ...(provider.healthCheck || {}), status: "testing", lastCheck: Date.now() },
+  });
+
+  const entries = [];
+  for (const modelId of candidates) {
+    if (typeof onModelTest === "function") onModelTest(modelId);
+    const entry = await processHealthModel(provider, modelId, timeoutMs);
+    if (!entry) continue;
+    entries.push(entry);
+    await mergeHealthResult(provider, entry);
+  }
+  return entries;
+}
+
+function buildBaseProvider(provider) {
+  return {
     type: provider.type,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
@@ -152,54 +198,44 @@ export async function healthCheckProvider(id, timeoutMs = 15000) {
     tools: provider.tools || null,
     endpoint: provider.endpoint || "auto",
   };
+}
 
-  const modelResults = [];
-  let firstOk = null;
-  const startAll = Date.now();
-
-  for (let i = 0; i < candidates.length; i++) {
-    const modelId = candidates[i];
-    const attemptId = "health-" + id + "-" + Date.now() + "-" + i;
-    try {
-      const latency = await testSingleRequest(attemptId, baseProvider, modelId, timeoutMs);
-      const result = { model: modelId, status: "ok", latency };
-      modelResults.push(result);
-      if (!firstOk) firstOk = result;
-    } catch (err) {
-      modelResults.push({ model: modelId, status: "error", error: err.message });
-    }
+async function processHealthModel(provider, modelId, timeoutMs) {
+  const attemptId = "health-" + provider.id + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+  try {
+    const latency = await testSingleRequest(attemptId, buildBaseProvider(provider), modelId, timeoutMs);
+    return { model: modelId, status: "ok", latency };
+  } catch (err) {
+    return { model: modelId, status: "error", error: err.message };
   }
+}
 
+function mergeHealthResult(provider, entry) {
+  const current = [];
+  providers.subscribe((p) => current.push(...p))();
+  const fresh = current.find((p) => p.id === provider.id);
+  if (!fresh) return;
+
+  const prev = fresh.healthCheck || {};
+  const prevResults = Array.isArray(prev.modelResults) ? prev.modelResults : [];
+  const modelResults = [...prevResults.filter((r) => r.model !== entry.model), entry];
   const okCount = modelResults.filter((r) => r.status === "ok").length;
   const total = modelResults.length;
 
-  if (okCount > 0) {
-    const result = {
-      status: "ok",
-      latency: firstOk?.latency,
-      okCount,
-      total,
-      modelResults,
-    };
-    await updateProvider(id, {
-      healthCheck: { ...result, lastCheck: Date.now() },
-    });
-    return result;
-  } else {
-    const firstErr = modelResults.find((r) => r.status === "error");
-    const result = {
-      status: "error",
-      latency: Date.now() - startAll,
-      error: firstErr?.error || "所有模型均连接失败",
-      okCount,
-      total,
-      modelResults,
-    };
-    await updateProvider(id, {
-      healthCheck: { ...result, lastCheck: Date.now() },
-    });
-    return result;
-  }
+  const result = {
+    status: okCount > 0 ? "ok" : "error",
+    latency: entry.status === "ok" ? entry.latency : undefined,
+    error: okCount === 0
+      ? (modelResults.find((r) => r.status === "error")?.error || "连接失败")
+      : null,
+    okCount,
+    total,
+    modelResults,
+  };
+
+  return updateProvider(provider.id, {
+    healthCheck: { ...result, lastCheck: Date.now() },
+  });
 }
 
 function testSingleRequest(requestId, provider, modelId, timeoutMs) {
@@ -273,4 +309,62 @@ function testSingleRequest(requestId, provider, modelId, timeoutMs) {
       }
     );
   });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function refreshProviderModels(id, timeoutMs = 15000) {
+  const current = [];
+  providers.subscribe((p) => current.push(...p))();
+  const provider = current.find((p) => p.id === id);
+  if (!provider) return { id, name: id, status: "error", error: "未找到配置" };
+
+  const result = await new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ success: false, error: "请求超时" }), timeoutMs);
+    chrome.runtime.sendMessage(
+      {
+        type: "FETCH_MODELS",
+        provider: {
+          type: provider.type,
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          headers: provider.headers || {},
+        },
+      },
+      (response) => {
+        clearTimeout(timeout);
+        if (chrome.runtime.lastError) {
+          resolve({ success: false, error: chrome.runtime.lastError.message });
+        } else if (response?.success && Array.isArray(response.models) && response.models.length > 0) {
+          resolve({ success: true, models: response.models });
+        } else {
+          resolve({ success: false, error: response?.error || "未获取到模型" });
+        }
+      }
+    );
+  });
+
+  if (!result.success) {
+    return { id, name: provider.name, status: "error", error: result.error };
+  }
+
+  const models = result.models;
+  const defaultModel = provider.defaultModel && models.some((m) => m.id === provider.defaultModel)
+    ? provider.defaultModel
+    : (models[0]?.id || provider.defaultModel);
+
+  await updateProvider(id, { models, defaultModel, healthCheck: null });
+  return { id, name: provider.name, status: "ok", count: models.length };
+}
+
+export async function refreshAllProvidersModels(timeoutMs = 15000, intervalMs = 300) {
+  const current = [];
+  providers.subscribe((p) => current.push(...p))();
+  const results = [];
+  for (let i = 0; i < current.length; i++) {
+    const provider = current[i];
+    results.push(await refreshProviderModels(provider.id, timeoutMs));
+    if (i < current.length - 1) await sleep(intervalMs);
+  }
+  return results;
 }
