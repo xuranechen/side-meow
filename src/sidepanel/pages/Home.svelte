@@ -9,8 +9,9 @@
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import { CCSwitchMapper } from "../../lib/ccswitch/mapper.js";
   import { generateDeepLink, tryOpenCCSwitch, getCCSwitchDownloadUrl } from "../../lib/ccswitch/deeplink.js";
-  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap, Wand2, RefreshCw, Loader2 } from "lucide-svelte";
-  import { getStorage, setStorage } from "../../lib/storage/chrome-storage.js";
+  import { MagpieMapper } from "../../lib/magpie/mapper.js";
+  import { generateWebImportLink, generateAppImportLink, getMagpieDownloadUrl } from "../../lib/magpie/deeplink.js";
+  import { Plus, Download, Settings as SettingsIcon, History, X, Copy, Zap, Wand2, RefreshCw, Loader2, Bird } from "lucide-svelte";
   import AppSelector from "../components/AppSelector.svelte";
   import ModelSelect from "../components/ModelSelect.svelte";
 
@@ -23,54 +24,19 @@
   let ccswitchApp = $state("claude");
   let ccswitchModel = $state("");
   let storageBytes = $state(0);
-  let testAllCooldown = $state(0);
   let testAllRunning = $state(false);
-  let cooldownTimer = $state(null);
   let testingModel = $state(null);
   let refreshingModels = $state(false);
   let fullTesting = $state(false);
   let showFullTestConfirm = $state(false);
 
-  const TEST_ALL_COOLDOWN = 5 * 60 * 1000;
-
-  $effect(() => {
-    getStorage("lastTestAllTime").then((ts) => {
-      if (!ts) return;
-      const elapsed = Date.now() - ts;
-      if (elapsed < TEST_ALL_COOLDOWN) {
-        startCooldownTimer(TEST_ALL_COOLDOWN - elapsed);
-      }
-    });
-    return () => { if (cooldownTimer) clearInterval(cooldownTimer); };
-  });
-
-  function startCooldownTimer(remaining) {
-    testAllCooldown = remaining;
-    if (cooldownTimer) clearInterval(cooldownTimer);
-    cooldownTimer = setInterval(() => {
-      testAllCooldown = Math.max(0, testAllCooldown - 1000);
-      if (testAllCooldown <= 0) {
-        clearInterval(cooldownTimer);
-        cooldownTimer = null;
-      }
-    }, 1000);
-  }
-
-  function formatCooldown(ms) {
-    const m = Math.floor(ms / 60000);
-    const s = Math.floor((ms % 60000) / 1000);
-    return `${m}:${String(s).padStart(2, "0")}`;
-  }
-
   async function handleTestAll() {
-    if (testAllCooldown > 0 || testAllRunning) return;
+    if (testAllRunning) return;
     testAllRunning = true;
-    startCooldownTimer(TEST_ALL_COOLDOWN);
     const timeout = ($settings.requestTimeout || 15) * 1000;
     const results = await Promise.all(
       sortedProviders.map((p) => healthCheckProvider(p.id, timeout))
     );
-    await setStorage("lastTestAllTime", Date.now());
     let okProviders = 0;
     let okModels = 0;
     let totalModels = 0;
@@ -161,6 +127,18 @@
     ccswitchApp = "claude";
     ccswitchModel = selectedProvider.defaultModel || "";
     showCCSwitchPreview = true;
+  }
+
+  function openInMagpie() {
+    if (!selectedProvider) return;
+    if (!MagpieMapper.isExportable(selectedProvider)) {
+      showToast("该接口地址不是 https，magpie 不接受", "error");
+      return;
+    }
+    const params = MagpieMapper.mapProvider(selectedProvider);
+    const link = generateWebImportLink(params);
+    window.open(link, "_blank");
+    showToast("已打开 magpie 导入页面");
   }
 
   async function confirmCCSwitchExport() {
@@ -392,16 +370,14 @@
       {/if}
       {#if sortedProviders.length > 1}
         <button
-          class="storage-action {testAllCooldown > 0 || testAllRunning ? 'storage-test-disabled' : ''}"
+          class="storage-action {testAllRunning ? 'storage-test-disabled' : ''}"
           onclick={handleTestAll}
-          disabled={testAllCooldown > 0 || testAllRunning}
-          title={testAllCooldown > 0 ? `冷却中 ${formatCooldown(testAllCooldown)}` : "一键测试全部接口"}
+          disabled={testAllRunning}
+          title="一键测试全部接口"
         >
           <Zap size={11} />
           {#if testAllRunning}
             <span>测试中…</span>
-          {:else if testAllCooldown > 0}
-            <span>{formatCooldown(testAllCooldown)}</span>
           {:else}
             <span>全部测试</span>
           {/if}
@@ -495,6 +471,10 @@
             <button class="detail-export" onclick={openCCSwitchPreview} aria-label="快速导出到 CC Switch" title="快速导出到 CC Switch">
               <Download size={12} />
               <span>导出到 CC Switch</span>
+            </button>
+            <button class="detail-export" onclick={openInMagpie} aria-label="添加到 magpie" title="添加到 magpie">
+              <Bird size={12} />
+              <span>添加到 magpie</span>
             </button>
             <button class="detail-close" onclick={closeProviderDetails} aria-label="关闭">
               <X size={14} />

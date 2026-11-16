@@ -392,6 +392,16 @@ async function handleApiRequest(message) {
       ));
     }
 
+    // 多数中转只实现 chat/completions，/responses 直接 404。此时回退到 chat，
+    // 否则用户一旦选中 responses 端点（或误挂了 web_search 工具）整个功能都不可用
+    if (request.responseFormat === "responses" && (!response || response.status === 404)) {
+      console.log("[side-meow] Responses endpoint unavailable, falling back to chat/completions");
+      request = buildRequest(provider, messages, { ...options, endpoint: "chat" });
+      ({ response, usedUrl } = await tryEndpoints(
+        request.urlCandidates, request.headers, request.body, abortController.signal,
+      ));
+    }
+
     const { responseFormat = "chat" } = request;
 
     if (!response) {
@@ -1001,9 +1011,10 @@ function parseResponse(apiType, data, responseFormat = "chat") {
         name: call.function?.name || "",
         arguments: call.function?.arguments || "",
       }));
+      const reasoning = message.reasoning_content ?? message.reasoning;
       return {
         content,
-        thinkingSegments: message.reasoning_content ? [message.reasoning_content] : null,
+        thinkingSegments: reasoning ? [reasoning] : null,
         toolCalls: toolCalls.length > 0 ? toolCalls : null,
         usage: data.usage ? {
           promptTokens: data.usage.prompt_tokens,
@@ -1060,7 +1071,10 @@ function extractStreamToken(apiType, data) {
       const delta = data.choices?.[0]?.delta;
       if (!delta || delta.tool_calls) return null;
       const result = {};
-      if (delta.reasoning_content) result.thinking = delta.reasoning_content;
+      // 不同上游的思考字段命名不一：多数兼容层用 reasoning_content，
+      // 也有一部分（如 vLLM / DeepSeek 直连）直接返回 reasoning
+      const reasoning = delta.reasoning_content ?? delta.reasoning;
+      if (reasoning) result.thinking = reasoning;
       if (typeof delta.content === "string" && delta.content) result.content = delta.content;
       return Object.keys(result).length > 0 ? result : null;
     }

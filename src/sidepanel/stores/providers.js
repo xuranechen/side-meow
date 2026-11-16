@@ -123,13 +123,25 @@ export async function reorderProviders(orderedIds) {
   await saveProviders(reordered);
 }
 
+// 测试请求必须用一个真实存在于模型列表里的 ID。历史数据里可能残留
+// ProviderForm 预置的占位模型（gpt-4o 等），直接拿去打上游只会得到 503/404，
+// 且错误信息会被翻译成「服务端错误」，完全看不出是模型 ID 的问题。
+function resolveTestModel(provider) {
+  const modelIds = (provider.models || []).map((m) => m.id).filter(Boolean);
+  if (provider.defaultModel && modelIds.includes(provider.defaultModel)) {
+    return provider.defaultModel;
+  }
+  if (modelIds.length > 0) return modelIds[0];
+  return provider.defaultModel || "gpt-4o-mini";
+}
+
 export async function healthCheckProvider(id, timeoutMs = 15000) {
   const current = [];
   providers.subscribe((p) => current.push(...p))();
   const provider = current.find((p) => p.id === id);
   if (!provider) return;
 
-  const modelId = provider.defaultModel || provider.models?.[0]?.id || "gpt-4o-mini";
+  const modelId = resolveTestModel(provider);
   await updateProvider(id, {
     healthCheck: { ...(provider.healthCheck || {}), status: "testing", lastCheck: Date.now() },
   });
@@ -162,15 +174,13 @@ export async function healthCheckAll(providerId, timeoutMs = 15000, onModelTest 
   const provider = current.find((p) => p.id === providerId);
   if (!provider) return [];
 
-  const defaultModel = provider.defaultModel || provider.models?.[0]?.id || "gpt-4o-mini";
+  const defaultModel = resolveTestModel(provider);
   const modelIds = (provider.models || []).map((m) => m.id).filter(Boolean);
   const candidates = modelIds.length > 0 ? modelIds : [defaultModel];
-  if (defaultModel) {
-    const idx = candidates.indexOf(defaultModel);
-    if (idx !== -1) {
-      const [first] = candidates.splice(idx, 1);
-      candidates.unshift(first);
-    }
+  const idx = candidates.indexOf(defaultModel);
+  if (idx !== -1) {
+    const [first] = candidates.splice(idx, 1);
+    candidates.unshift(first);
   }
 
   await updateProvider(providerId, {
@@ -206,7 +216,9 @@ async function processHealthModel(provider, modelId, timeoutMs) {
     const latency = await testSingleRequest(attemptId, buildBaseProvider(provider), modelId, timeoutMs);
     return { model: modelId, status: "ok", latency };
   } catch (err) {
-    return { model: modelId, status: "error", error: err.message };
+    // 把实际使用的模型 ID 带进错误信息：上游对不存在的模型常返回 503/404，
+    // 后台会统一翻译成「服务端错误」，不标出模型就完全无法定位
+    return { model: modelId, status: "error", error: `${err.message}（模型 ${modelId}）` };
   }
 }
 

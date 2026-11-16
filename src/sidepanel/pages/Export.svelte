@@ -1,4 +1,4 @@
-﻿<script>
+<script>
   import { providers } from "../stores/providers.js";
   import { sessions } from "../stores/sessions.js";
   import { settings } from "../stores/settings.js";
@@ -8,7 +8,15 @@
   import { updateSettings } from "../stores/settings.js";
   import { CCSwitchMapper } from "../../lib/ccswitch/mapper.js";
   import { generateDeepLink, tryOpenCCSwitchBatch, getCCSwitchDownloadUrl } from "../../lib/ccswitch/deeplink.js";
-  import { ChevronLeft, Download, Upload, FileJson, AlertTriangle, ExternalLink, X } from "lucide-svelte";
+  import { MagpieMapper } from "../../lib/magpie/mapper.js";
+  import {
+    generateWebImportLink,
+    generateAppImportLink,
+    tryOpenMagpie,
+    getMagpieDownloadUrl,
+    getMagpieDocsUrl,
+  } from "../../lib/magpie/deeplink.js";
+  import { ChevronLeft, Download, Upload, FileJson, AlertTriangle, ExternalLink, X, Bird } from "lucide-svelte";
   import AppSelector from "../components/AppSelector.svelte";
   import ModelSelect from "../components/ModelSelect.svelte";
 
@@ -24,6 +32,10 @@
   let showSecurityWarning = $state(false);
   let pendingExportData = $state(null);
   let ccswitchFailed = $state(false);
+  let showMagpiePreview = $state(false);
+  let magpieData = $state(null);
+  let magpieMode = $state("web");
+  let magpieFailed = $state(false);
 
   function handleExport() {
     if (exportOptions.providers && $providers.length > 0) {
@@ -204,6 +216,72 @@
   function deselectAllProviders() {
     selectedProviders = [];
   }
+
+  function handleMagpieExport() {
+    const selected = $providers.filter((p) => selectedProviders.includes(p.id));
+    if (selected.length === 0) {
+      showToast("请至少选择一个配置", "error");
+      return;
+    }
+
+    const exportable = selected.filter((p) => MagpieMapper.isExportable(p));
+    if (exportable.length === 0) {
+      showToast("所选配置的地址不是 https，magpie 不接受", "error");
+      return;
+    }
+    if (exportable.length < selected.length) {
+      showToast(`${selected.length - exportable.length} 个配置因地址不合规已跳过`, "warning");
+    }
+
+    magpieData = exportable.map((p) => ({
+      provider: p,
+      params: MagpieMapper.mapProvider(p),
+      paramName: MagpieMapper.baseUrlParamName(p.type),
+    }));
+    magpieMode = "web";
+    magpieFailed = false;
+    showMagpiePreview = true;
+  }
+
+  async function handleMagpieConfirm() {
+    if (!magpieData?.length) return;
+
+    const links = magpieData.map((item) =>
+      magpieMode === "app"
+        ? generateAppImportLink(item.params)
+        : generateWebImportLink(item.params)
+    );
+
+    showMagpiePreview = false;
+
+    if (magpieMode === "app") {
+      const opened = await tryOpenMagpie(links[0], { detect: true });
+      if (!opened) {
+        magpieFailed = true;
+        showToast("未检测到 magpie，已改用网页链接", "warning");
+        window.open(generateWebImportLink(magpieData[0].params), "_blank");
+        return;
+      }
+      for (let i = 1; i < links.length; i++) {
+        window.open(links[i], "_blank");
+      }
+      showToast(`已发送 ${links.length} 个配置到 magpie`);
+      return;
+    }
+
+    for (const link of links) {
+      window.open(link, "_blank");
+    }
+    showToast(`已打开 ${links.length} 个 magpie 导入页面`);
+  }
+
+  async function copyMagpieLink(item) {
+    const link = magpieMode === "app"
+      ? generateAppImportLink(item.params)
+      : generateWebImportLink(item.params);
+    await navigator.clipboard.writeText(link);
+    showToast("导入链接已复制");
+  }
 </script>
 
 <div class="h-full flex flex-col">
@@ -288,6 +366,49 @@
           </div>
         </div>
       {/if}
+    </section>
+
+    <section>
+      <h2 class="text-[11px] font-semibold text-[var(--color-text-secondary)] mb-3 flex items-center gap-1.5" style="letter-spacing: 0.04em;">
+        <Bird size={12} class="text-[var(--color-primary)]" />
+        添加到 magpie
+      </h2>
+      <p class="text-[11px] text-[var(--color-text-muted)] mb-3">
+        生成 magpie 导入链接，把所选接口加进 Claude Code、Codex、OpenCode、Gemini CLI 等 Agent
+      </p>
+
+      <button
+        class="migration-bordered btn-primary flex items-center justify-center gap-2"
+        onclick={handleMagpieExport}
+        disabled={selectedProviders.length === 0}
+      >
+        <Bird size={14} />
+        添加到 magpie
+      </button>
+
+      {#if magpieFailed}
+        <div class="migration-bordered p-3 rounded-md border mt-2" style="background: var(--color-bg-tertiary); border-color: var(--color-warning);">
+          <div class="flex items-start gap-2">
+            <AlertTriangle size={14} class="text-[var(--color-warning)] mt-0.5 flex-shrink-0" />
+            <div>
+              <p class="text-[11px] font-medium text-[var(--color-warning)]">未检测到 magpie</p>
+              <p class="text-[10px] text-[var(--color-text-secondary)] mt-1">
+                已改用网页链接，未安装时会引导下载。
+                <a href={getMagpieDownloadUrl()} target="_blank" rel="noopener" class="text-[var(--color-primary)]">
+                  前往下载
+                </a>
+              </p>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <p class="text-[10px] text-[var(--color-text-muted)] mt-2">
+        地址需为 https，magpie 会拒绝 http（本机与局域网除外）。
+        <a href={getMagpieDocsUrl()} target="_blank" rel="noopener" class="text-[var(--color-primary)]">
+          查看文档
+        </a>
+      </p>
     </section>
 
     <section>
@@ -410,6 +531,93 @@
         <div class="ccswitch-preview-actions">
           <button class="ccswitch-preview-btn" onclick={cancelExport}>取消</button>
           <button class="ccswitch-preview-btn" style="border-color: rgba(241,217,115,.5); background: rgba(241,217,115,.10); color: var(--color-warning);" onclick={doExport}>继续导出</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showMagpiePreview && magpieData?.length}
+    <div
+      class="ccswitch-preview-backdrop animate-fade-in"
+      onclick={() => (showMagpiePreview = false)}
+      onkeydown={(e) => e.key === "Escape" && (showMagpiePreview = false)}
+      role="button"
+      tabindex="-1"
+      aria-label="关闭"
+    >
+      <div class="ccswitch-preview-modal card animate-slide-up" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="0">
+        <div class="ccswitch-preview-head">
+          <div class="min-w-0">
+            <p class="ccswitch-preview-eyebrow">magpie</p>
+            <h2 class="text-[13px] font-semibold text-[var(--color-text-bright)]">预览导入数据</h2>
+          </div>
+          <button
+            class="ccswitch-preview-close"
+            onclick={() => (showMagpiePreview = false)}
+            aria-label="关闭"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        <div class="magpie-mode-row">
+          <button
+            class="magpie-mode-btn"
+            class:active={magpieMode === "web"}
+            onclick={() => (magpieMode = "web")}
+          >
+            网页链接
+          </button>
+          <button
+            class="magpie-mode-btn"
+            class:active={magpieMode === "app"}
+            onclick={() => (magpieMode = "app")}
+          >
+            应用协议
+          </button>
+        </div>
+        <p class="magpie-mode-hint">
+          {#if magpieMode === "web"}
+            参数放在 # 后，密钥不经过 usemagpie.ai 服务器；未安装 magpie 时会引导下载
+          {:else}
+            需要已安装 magpie 0.1.8 或更新版本
+          {/if}
+        </p>
+
+        <div class="ccswitch-preview-list">
+          {#each magpieData as item}
+            <div class="ccswitch-preview-row">
+              <div class="flex items-center justify-between gap-2 mb-1">
+                <p class="text-[12px] font-medium text-[var(--color-text-bright)] truncate" style="font-family: var(--font-mono);">{item.params.name}</p>
+                <button class="magpie-copy-btn" onclick={() => copyMagpieLink(item)} title="复制导入链接">
+                  复制
+                </button>
+              </div>
+              <p class="text-[10px] text-[var(--color-text-muted)] truncate" style="font-family: var(--font-mono);">
+                {item.paramName}={item.params[item.paramName] || "—"}
+              </p>
+              {#if item.params.models}
+                <p class="text-[10px] text-[var(--color-text-muted)] truncate" style="font-family: var(--font-mono);">
+                  models={item.params.models}
+                </p>
+              {/if}
+            </div>
+          {/each}
+        </div>
+
+        <div class="ccswitch-preview-actions">
+          <button
+            class="ccswitch-preview-btn"
+            onclick={() => (showMagpiePreview = false)}
+          >
+            取消
+          </button>
+          <button
+            class="ccswitch-preview-btn ccswitch-preview-btn-primary"
+            onclick={handleMagpieConfirm}
+          >
+            确认导入
+          </button>
         </div>
       </div>
     </div>
@@ -575,5 +783,54 @@
     border-color: rgba(var(--accent-rgb), .72);
     background: rgba(var(--accent-rgb), .15);
     box-shadow: var(--glow-primary);
+  }
+
+  .magpie-mode-row {
+    display: flex;
+    gap: 4px;
+    padding-top: 8px;
+  }
+  .magpie-mode-btn {
+    flex: 1 1 0;
+    min-height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--sunken-rgb), .32);
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    transition: color .16s var(--ease-out), border-color .16s var(--ease-out), background .16s var(--ease-out);
+  }
+  .magpie-mode-btn:hover {
+    border-color: var(--color-border-hover);
+    color: var(--color-text-bright);
+  }
+  .magpie-mode-btn.active {
+    border-color: rgba(var(--accent-rgb), .58);
+    background: rgba(var(--accent-rgb), .10);
+    color: var(--color-primary-hover);
+  }
+  .magpie-mode-hint {
+    padding-top: 5px;
+    color: var(--color-text-muted);
+    font-size: 9px;
+    line-height: 1.4;
+  }
+  .magpie-copy-btn {
+    flex: 0 0 auto;
+    min-height: 20px;
+    padding: 0 7px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--sunken-rgb), .36);
+    color: var(--color-text-secondary);
+    font-size: 9px;
+    transition: color .15s var(--ease-out), border-color .15s var(--ease-out), background .15s var(--ease-out);
+  }
+  .magpie-copy-btn:hover {
+    border-color: var(--color-border-hover);
+    background: rgba(var(--accent-rgb), .08);
+    color: var(--color-primary-hover);
   }
 </style>
